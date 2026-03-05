@@ -8,17 +8,40 @@ function StatusDot({ active }: { active: boolean }) {
       className={active ? "status-dot-active" : ""}
       style={{
         display: "inline-block",
-        width: 10,
-        height: 10,
+        width: 8,
+        height: 8,
         borderRadius: "50%",
         backgroundColor: active ? "#22c55e" : "#ef4444",
-        marginRight: 8,
+        marginRight: 7,
         flexShrink: 0,
       }}
     />
   );
 }
 
+function StatusBadge({ active, label }: { active: boolean; label: string }) {
+  return (
+    <span style={{
+      display: "inline-flex",
+      alignItems: "center",
+      fontSize: 12,
+      fontWeight: 500,
+      color: active ? "var(--text-green)" : "var(--text-muted)",
+    }}>
+      <StatusDot active={active} />
+      {label}
+    </span>
+  );
+}
+
+function InfoRow({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div className="dash-row">
+      <span className="dash-label">{label}</span>
+      <span className="dash-value">{children}</span>
+    </div>
+  );
+}
 
 function formatExpiry(expiresAt: number | null): string {
   if (!expiresAt) return "Unknown";
@@ -59,17 +82,12 @@ export default function Dashboard() {
   useEffect(() => {
     fetchStatus();
     api.isCloudflaredAvailable().then(setCloudflaredAvailable);
-
-    // Poll every 5 seconds
     const interval = setInterval(fetchStatus, 5000);
-
-    // Listen for tunnel URL events
     const unlisten = listen<string>("tunnel-url", (event) => {
       setStatus((prev) =>
         prev ? { ...prev, tunnel_url: event.payload, tunnel_running: true } : prev
       );
     });
-
     return () => {
       clearInterval(interval);
       unlisten.then((fn) => fn());
@@ -106,7 +124,6 @@ export default function Dashboard() {
         await api.startProxy();
       }
     });
-
 
   const toggleTunnel = () =>
     withLoading("tunnel", async () => {
@@ -151,10 +168,10 @@ export default function Dashboard() {
     <div className="dashboard">
       {error && <div className="error-banner">{error}</div>}
 
-      {/* Proxy Server Card */}
-      <div className="card">
-        <div className="card-header">
-          <div className="card-title">
+      {/* Proxy Server */}
+      <div className="dash-card">
+        <div className="dash-card-header">
+          <div className="dash-card-title">
             <StatusDot active={status.proxy_running} />
             Proxy Server
           </div>
@@ -163,45 +180,43 @@ export default function Dashboard() {
             onClick={toggleProxy}
             disabled={loading.proxy || loading.token}
           >
-            {loading.proxy || loading.token
-              ? "..."
-              : status.proxy_running
-              ? "Stop"
-              : "Start"}
+            {loading.proxy || loading.token ? "..." : status.proxy_running ? "Stop" : "Start"}
           </button>
         </div>
-        <div className="card-body">
-          <div className="info-row">
-            <span className="label">Status</span>
-            <span className={`value ${status.proxy_running ? "text-green" : "text-muted"}`}>
-              {status.proxy_running ? "Running" : "Stopped"}
-            </span>
-          </div>
-          <div className="info-row">
-            <span className="label">Port</span>
-            <span className="value mono">{status.proxy_port}</span>
-          </div>
-          {status.proxy_running && (
-            <div className="info-row">
-              <span className="label">Endpoint</span>
-              <span className="value mono text-green">http://localhost:{status.proxy_port}</span>
-            </div>
-          )}
-          <div className="info-row" style={{ marginTop: 8, paddingTop: 14, borderTop: "1px solid var(--border, #333)" }}>
-            <span className="label">
-              <StatusDot active={status.token_valid} />
-              Claude OAuth
-            </span>
-            <span className={`value ${status.token_valid ? "text-green" : "text-red"}`}>
-              {status.token_valid
+
+        <InfoRow label="Status">
+          <StatusBadge active={status.proxy_running} label={status.proxy_running ? "Running" : "Stopped"} />
+        </InfoRow>
+
+        <InfoRow label="Port">
+          <span className="mono" style={{ fontSize: 13 }}>{status.proxy_port}</span>
+        </InfoRow>
+
+        {status.proxy_running && (
+          <InfoRow label="Endpoint">
+            <span className="mono text-green" style={{ fontSize: 12 }}>http://localhost:{status.proxy_port}</span>
+          </InfoRow>
+        )}
+
+        <div className="dash-divider" />
+
+        <InfoRow label="Claude OAuth">
+          <StatusBadge
+            active={status.token_valid}
+            label={
+              status.token_valid
                 ? status.token_expires_at
                   ? `Valid · expires ${formatExpiry(status.token_expires_at)}`
                   : "Valid"
-                : "Not connected"}
-            </span>
-          </div>
-          {status.token_valid && tokenDetails && (
-            <div style={{ display: "flex", flexDirection: "row", gap: 6, marginTop: 6 }}>
+                : "Not connected"
+            }
+          />
+        </InfoRow>
+
+        {status.token_valid && tokenDetails && (
+          <div className="dash-row">
+            <span className="dash-label" />
+            <div style={{ display: "flex", gap: 6 }}>
               <button className="btn btn-small btn-secondary" onClick={() => copyToken("access")}>
                 {copiedToken === "access" ? "Copied!" : "Copy Access Token"}
               </button>
@@ -209,19 +224,23 @@ export default function Dashboard() {
                 {copiedToken === "refresh" ? "Copied!" : "Copy Refresh Token"}
               </button>
             </div>
-          )}
-          {!status.token_valid && !status.proxy_running && (
-            <div className="hint">
-              Run <code>claude auth login</code> in your terminal to authenticate, then click <strong>Start</strong>.
-            </div>
-          )}
-        </div>
+          </div>
+        )}
+
+        {!status.token_valid && !status.proxy_running && (
+          <div className="dash-row">
+            <span className="dash-label" />
+            <span className="hint" style={{ margin: 0 }}>
+              If not logged in, run <code>claude auth login</code> first, then click <strong>Start</strong>
+            </span>
+          </div>
+        )}
       </div>
 
-      {/* Cloudflare Tunnel Card */}
-      <div className="card">
-        <div className="card-header">
-          <div className="card-title">
+      {/* Cloudflare Tunnel */}
+      <div className="dash-card">
+        <div className="dash-card-header">
+          <div className="dash-card-title">
             <StatusDot active={status.tunnel_running} />
             Cloudflare Tunnel
           </div>
@@ -234,45 +253,39 @@ export default function Dashboard() {
             {loading.tunnel ? "..." : status.tunnel_running ? "Stop" : "Start"}
           </button>
         </div>
-        <div className="card-body">
-          {!cloudflaredAvailable && (
-            <div className="hint warning">
-              cloudflared not found. Install with: <code>brew install cloudflared</code>
-            </div>
-          )}
-          <div className="info-row">
-            <span className="label">Status</span>
-            <span className={`value ${status.tunnel_running ? "text-green" : "text-muted"}`}>
-              {status.tunnel_running
-                ? status.tunnel_url
-                  ? "Active"
-                  : "Starting..."
-                : "Stopped"}
+
+        {!cloudflaredAvailable && (
+          <div className="dash-row">
+            <span className="dash-label" />
+            <span className="hint warning" style={{ margin: 0 }}>
+              cloudflared not found — <code>brew install cloudflared</code>
             </span>
           </div>
-          {status.tunnel_url && (
-            <div className="info-row">
-              <span className="label">Public URL</span>
-              <div className="url-row">
-                <span className="value mono text-green tunnel-url">{status.tunnel_url}</span>
-                <button className="btn btn-small btn-secondary" onClick={copyUrl}>
-                  {copied ? "Copied!" : "Copy"}
-                </button>
-              </div>
+        )}
+
+        <InfoRow label="Status">
+          <StatusBadge
+            active={status.tunnel_running}
+            label={status.tunnel_running ? (status.tunnel_url ? "Active" : "Starting...") : "Stopped"}
+          />
+        </InfoRow>
+
+        {status.tunnel_url && (
+          <InfoRow label="Public URL">
+            <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
+              <span className="mono text-green tunnel-url" style={{ fontSize: 11 }}>{status.tunnel_url}</span>
+              <button className="btn btn-small btn-secondary" onClick={copyUrl} style={{ flexShrink: 0 }}>
+                {copied ? "Copied!" : "Copy"}
+              </button>
             </div>
-          )}
-          {status.tunnel_url && (
-            <div className="hint">
-              Set <code>ANTHROPIC_BASE_URL={status.tunnel_url}</code> in your client's environment.
-            </div>
-          )}
-        </div>
+          </InfoRow>
+        )}
       </div>
 
-      {/* Telegram Bot Card */}
-      <div className="card">
-        <div className="card-header">
-          <div className="card-title">
+      {/* Telegram Bot */}
+      <div className="dash-card">
+        <div className="dash-card-header">
+          <div className="dash-card-title">
             <StatusDot active={!!status.telegram_running} />
             Telegram Bot
           </div>
@@ -285,44 +298,26 @@ export default function Dashboard() {
             {loading.telegram ? "..." : status.telegram_running ? "Stop" : "Start"}
           </button>
         </div>
-        <div className="card-body">
-          {!telegramStatus?.bot_token_set && (
-            <div className="hint warning">
-              No bot token configured. Go to Settings → Telegram to set it up.
-            </div>
-          )}
-          <div className="info-row">
-            <span className="label">Status</span>
-            <span className={`value ${status.telegram_running ? "text-green" : "text-muted"}`}>
-              {status.telegram_running ? "Running" : "Stopped"}
+
+        {!telegramStatus?.bot_token_set && (
+          <div className="dash-row">
+            <span className="dash-label" />
+            <span className="hint warning" style={{ margin: 0 }}>
+              No bot token — configure in Settings → Telegram
             </span>
           </div>
-          {telegramStatus && telegramStatus.allowed_users_count > 0 && (
-            <div className="info-row">
-              <span className="label">Allowed users</span>
-              <span className="value">{telegramStatus.allowed_users_count}</span>
-            </div>
-          )}
-          {telegramStatus?.bot_token_set && !status.telegram_running && (
-            <div className="hint">
-              Users can message your bot with <code>/token</code> to get connection info,
-              <code>/refresh</code> to force token refresh.
-            </div>
-          )}
-        </div>
-      </div>
+        )}
 
-      {/* Quick Start */}
-      {status.proxy_running && (
-        <div className="card card-flat">
-          <div className="card-title" style={{ marginBottom: 10 }}>Client Setup</div>
-          <p className="hint">Set these environment variables in your client (e.g. <code>~/.zshenv</code>):</p>
-          <pre className="code-block">
-{`export ANTHROPIC_BASE_URL=${status.tunnel_url || `http://localhost:${status.proxy_port}`}
-export ANTHROPIC_AUTH_TOKEN=any-dummy-key`}
-          </pre>
-        </div>
-      )}
+        <InfoRow label="Status">
+          <StatusBadge active={!!status.telegram_running} label={status.telegram_running ? "Running" : "Stopped"} />
+        </InfoRow>
+
+        {telegramStatus && telegramStatus.allowed_users_count > 0 && (
+          <InfoRow label="Allowed users">
+            <span style={{ fontSize: 13 }}>{telegramStatus.allowed_users_count}</span>
+          </InfoRow>
+        )}
+      </div>
     </div>
   );
 }

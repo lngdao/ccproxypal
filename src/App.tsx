@@ -29,21 +29,11 @@ export default function App() {
   return (
     <div className="app">
       <header className="app-header">
-        <motion.div
-          className="app-title"
-          initial={{ opacity: 0, y: -8 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.4, ease: "easeOut" }}
-        >
-          <span className="app-icon">⚡</span>
-          ccproxypal
-        </motion.div>
-
         <motion.nav
           className="tab-nav"
           initial={{ opacity: 0, y: -8 }}
           animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.4, ease: "easeOut", delay: 0.05 }}
+          transition={{ duration: 0.4, ease: "easeOut" }}
         >
           {tabs.map((tab) => (
             <button

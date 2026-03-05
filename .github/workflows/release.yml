@@ -66,7 +66,7 @@ jobs:
           - platform: macos-latest
             target: aarch64-apple-darwin
             bundles: dmg
-          - platform: macos-13
+          - platform: macos-latest
             target: x86_64-apple-darwin
             bundles: dmg
 

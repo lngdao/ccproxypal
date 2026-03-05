@@ -133,73 +133,75 @@ export default function SettingsPanel() {
 
       <div className="card">
         <div className="card-title">Spending Limits (API Key Fallback)</div>
-        <div className="form-row">
-          <div className="form-group">
-            <label>Hourly ($)</label>
-            <input
-              type="number"
-              value={budget.budget_hourly ?? ""}
-              placeholder="No limit"
-              min={0}
-              step={0.01}
-              onChange={(e) =>
-                setBudget({
-                  ...budget,
-                  budget_hourly: e.target.value ? parseFloat(e.target.value) : null,
-                })
-              }
-            />
+        <div className="form-group">
+          <div className="form-row">
+            <div>
+              <label>Hourly ($)</label>
+              <input
+                type="number"
+                value={budget.budget_hourly ?? ""}
+                placeholder="No limit"
+                min={0}
+                step={0.01}
+                onChange={(e) =>
+                  setBudget({
+                    ...budget,
+                    budget_hourly: e.target.value ? parseFloat(e.target.value) : null,
+                  })
+                }
+              />
+            </div>
+            <div>
+              <label>Daily ($)</label>
+              <input
+                type="number"
+                value={budget.budget_daily ?? ""}
+                placeholder="No limit"
+                min={0}
+                step={0.01}
+                onChange={(e) =>
+                  setBudget({
+                    ...budget,
+                    budget_daily: e.target.value ? parseFloat(e.target.value) : null,
+                  })
+                }
+              />
+            </div>
+            <div>
+              <label>Weekly ($)</label>
+              <input
+                type="number"
+                value={budget.budget_weekly ?? ""}
+                placeholder="No limit"
+                min={0}
+                step={0.01}
+                onChange={(e) =>
+                  setBudget({
+                    ...budget,
+                    budget_weekly: e.target.value ? parseFloat(e.target.value) : null,
+                  })
+                }
+              />
+            </div>
+            <div>
+              <label>Monthly ($)</label>
+              <input
+                type="number"
+                value={budget.budget_monthly ?? ""}
+                placeholder="No limit"
+                min={0}
+                step={0.01}
+                onChange={(e) =>
+                  setBudget({
+                    ...budget,
+                    budget_monthly: e.target.value ? parseFloat(e.target.value) : null,
+                  })
+                }
+              />
+            </div>
           </div>
-          <div className="form-group">
-            <label>Daily ($)</label>
-            <input
-              type="number"
-              value={budget.budget_daily ?? ""}
-              placeholder="No limit"
-              min={0}
-              step={0.01}
-              onChange={(e) =>
-                setBudget({
-                  ...budget,
-                  budget_daily: e.target.value ? parseFloat(e.target.value) : null,
-                })
-              }
-            />
-          </div>
-          <div className="form-group">
-            <label>Weekly ($)</label>
-            <input
-              type="number"
-              value={budget.budget_weekly ?? ""}
-              placeholder="No limit"
-              min={0}
-              step={0.01}
-              onChange={(e) =>
-                setBudget({
-                  ...budget,
-                  budget_weekly: e.target.value ? parseFloat(e.target.value) : null,
-                })
-              }
-            />
-          </div>
-          <div className="form-group">
-            <label>Monthly ($)</label>
-            <input
-              type="number"
-              value={budget.budget_monthly ?? ""}
-              placeholder="No limit"
-              min={0}
-              step={0.01}
-              onChange={(e) =>
-                setBudget({
-                  ...budget,
-                  budget_monthly: e.target.value ? parseFloat(e.target.value) : null,
-                })
-              }
-            />
-          </div>
+          <span className="hint">Limits only apply to paid API key requests. Claude Code usage is free.</span>
         </div>
-        <span className="hint">Limits only apply to paid API key requests. Claude Code usage is free.</span>
       </div>
 
       {/* Telegram Bot */}
@@ -256,9 +258,13 @@ export default function SettingsPanel() {
           </span>
         </div>
 
-        <div className="hint">
-          Bot commands: <code>/status</code> <code>/token</code> <code>/url</code>{" "}
-          <code>/refresh</code> <code>/help</code>
+        <div className="form-group">
+          <label>Bot Commands</label>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+            {["/status", "/token", "/url", "/refresh", "/help"].map((cmd) => (
+              <code key={cmd} style={{ fontSize: 12, padding: "2px 8px", borderRadius: 5, background: "var(--bg)", border: "1px solid var(--border)" }}>{cmd}</code>
+            ))}
+          </div>
         </div>
       </div>
 

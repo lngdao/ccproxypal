@@ -19,11 +19,11 @@ function StatusDot({ active }: { active: boolean }) {
       className={active ? "status-dot-active" : ""}
       style={{
         display: "inline-block",
-        width: 10,
-        height: 10,
+        width: 8,
+        height: 8,
         borderRadius: "50%",
         backgroundColor: active ? "#22c55e" : "#ef4444",
-        marginRight: 8,
+        marginRight: 7,
         flexShrink: 0,
       }}
     />
@@ -37,7 +37,7 @@ export default function ClientPanel() {
   const [toolStatus, setToolStatus] = useState<ToolConfigStatus | null>(null);
   const [loading, setLoading] = useState<Record<string, boolean>>({});
   const [error, setError] = useState<string | null>(null);
-  const [success, setSuccess] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
 
   const fetchStatus = useCallback(async () => {
     try {
@@ -66,7 +66,7 @@ export default function ClientPanel() {
   const withLoading = async (key: string, fn: () => Promise<void>) => {
     setLoading((l) => ({ ...l, [key]: true }));
     setError(null);
-    setSuccess(null);
+    setNotice(null);
     try {
       await fn();
       await fetchStatus();
@@ -94,7 +94,7 @@ export default function ClientPanel() {
   const handleConfigure = (toolId: string) =>
     withLoading(`tool_${toolId}`, async () => {
       await api.configureTool(toolId);
-      setSuccess(`${TOOLS.find((t) => t.id === toolId)?.name} configured!`);
+      setNotice(`${TOOLS.find((t) => t.id === toolId)?.name} configured successfully.`);
     });
 
   const handleRemove = (toolId: string) =>
@@ -103,31 +103,31 @@ export default function ClientPanel() {
     });
 
   const proxyUrl = status?.tunnel_url || `http://localhost:${status?.proxy_port ?? 8082}`;
+  const isRunning = !!status?.proxy_running;
 
   return (
     <div className="client-panel">
       {error && <div className="error-banner">{error}</div>}
-      {success && (
-        <div
-          className="error-banner"
-          style={{ background: "#052e16", borderColor: "#166534", color: "#86efac" }}
-        >
-          {success}
+      {notice && (
+        <div className="error-banner" style={{ background: "#052e16", borderColor: "#166534", color: "#86efac" }}>
+          {notice}
         </div>
       )}
 
-      {/* Token Input Card */}
-      <div className="card">
-        <div className="card-header">
-          <div className="card-title">
-            <StatusDot active={!!status?.proxy_running} />
+      {/* Proxy Card */}
+      <div className="dash-card">
+        <div className="dash-card-header">
+          <div className="dash-card-title">
+            <StatusDot active={isRunning} />
             Proxy Server
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            {status?.proxy_running && (
-              <span className="proxy-badge running">:{status.proxy_port}</span>
+            {isRunning && (
+              <span style={{ fontSize: 11, color: "var(--text-green)", fontFamily: "var(--font-mono)" }}>
+                :{status?.proxy_port}
+              </span>
             )}
-            {status?.proxy_running ? (
+            {isRunning ? (
               <button className="btn btn-danger" onClick={handleStop} disabled={loading.proxy}>
                 {loading.proxy ? "..." : "Stop"}
               </button>
@@ -143,107 +143,104 @@ export default function ClientPanel() {
           </div>
         </div>
 
-        <div className="card-body">
-          <div className="form-group" style={{ marginBottom: 12 }}>
+        <div className="client-token-section">
+          <div className="client-field">
             <label>Access Token</label>
             <input
               type="password"
               placeholder="sk-ant-oau01-..."
               value={accessToken}
               onChange={(e) => setAccessToken(e.target.value)}
-              disabled={!!status?.proxy_running}
+              disabled={isRunning}
             />
           </div>
-
-          <div className="form-group" style={{ marginBottom: 0 }}>
+          <div className="client-field">
             <label>Refresh Token</label>
             <input
               type="password"
               placeholder="Refresh token..."
               value={refreshToken}
               onChange={(e) => setRefreshToken(e.target.value)}
-              disabled={!!status?.proxy_running}
+              disabled={isRunning}
             />
           </div>
-
-          {status?.proxy_running && (
-            <div className="info-row" style={{ marginTop: 12, paddingTop: 12, borderTop: "1px solid var(--border)" }}>
-              <span className="label">Endpoint</span>
-              <span className="value mono text-green">{proxyUrl}</span>
-            </div>
-          )}
         </div>
+
+        {isRunning && (
+          <div className="dash-row" style={{ borderTop: "1px solid var(--border)", paddingTop: 12, marginTop: 4 }}>
+            <span className="dash-label">Endpoint</span>
+            <span className="mono text-green" style={{ fontSize: 12 }}>{proxyUrl}</span>
+          </div>
+        )}
       </div>
 
-      {/* Tool Configuration Card */}
-      <div className="card">
-        <div className="card-header">
-          <div className="card-title">Configure Tools</div>
-          {status?.proxy_running && (
-            <span className="proxy-badge running" style={{ fontSize: 11 }}>
+      {/* Configure Tools Card */}
+      <div className="dash-card" style={{ padding: 0, overflow: "hidden" }}>
+        <div className="dash-card-header" style={{ padding: "12px 16px 10px", borderBottom: "1px solid var(--border)" }}>
+          <div className="dash-card-title" style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: "0.6px", color: "var(--text-muted)", fontWeight: 600 }}>
+            Configure Tools
+          </div>
+          {isRunning && (
+            <span style={{ fontSize: 11, color: "var(--text-green)", fontFamily: "var(--font-mono)" }}>
               → {proxyUrl}
             </span>
           )}
         </div>
-        <div className="card-body">
-          {!status?.proxy_running && (
-            <div className="hint warning" style={{ marginBottom: 10 }}>
-              Start the proxy first before configuring tools.
-            </div>
-          )}
 
-          <div className="tools-grid">
-            {TOOLS.map((tool) => {
-              const isConfigured = toolStatus?.[tool.id] ?? false;
-              const isLoading = loading[`tool_${tool.id}`];
-              return (
-                <div key={tool.id} className={`tool-row ${isConfigured ? "configured" : ""}`}>
-                  <div className="tool-info">
-                    <div className="tool-name">{tool.name}</div>
-                    <div className="tool-path">{tool.path}</div>
-                  </div>
-                  {isConfigured && <span className="tool-badge">✓ Configured</span>}
-                  {isConfigured && (
-                    <button
-                      className="btn btn-small btn-danger"
-                      disabled={isLoading}
-                      onClick={() => handleRemove(tool.id)}
-                    >
-                      {isLoading ? "..." : "Remove"}
-                    </button>
-                  )}
-                  <button
-                    className="btn btn-small btn-secondary"
-                    disabled={!status?.proxy_running || isLoading}
-                    onClick={() => handleConfigure(tool.id)}
-                  >
-                    {isLoading ? "..." : isConfigured ? "Update" : "Configure"}
-                  </button>
-                </div>
-              );
-            })}
-
-            {/* Cursor — manual */}
-            <div className="tool-row">
-              <div className="tool-info">
-                <div className="tool-name">Cursor</div>
-                <div className="tool-path">Settings → Models → API Base URL</div>
-              </div>
-              <button
-                className="btn btn-small btn-secondary"
-                disabled={!status?.proxy_running}
-                onClick={() => {
-                  navigator.clipboard.writeText(proxyUrl);
-                  setSuccess(`Copied ${proxyUrl} — paste into Cursor Settings → Models → API Base URL`);
-                }}
-              >
-                Copy URL
-              </button>
-            </div>
+        {!isRunning && (
+          <div style={{ padding: "0 16px 16px 16px", borderBottom: "1px solid var(--border)" }}>
+            <span className="hint warning" style={{ margin: 0 }}>Start the proxy first before configuring tools.</span>
           </div>
+        )}
+
+        {TOOLS.map((tool) => {
+          const isConfigured = toolStatus?.[tool.id] ?? false;
+          const isLoading = loading[`tool_${tool.id}`];
+          return (
+            <div key={tool.id} className="client-tool-row">
+              <div className="tool-info">
+                <div style={{ fontSize: 13, fontWeight: 500, color: "var(--text)" }}>{tool.name}</div>
+                <div style={{ fontSize: 11, color: "var(--text-muted)", fontFamily: "var(--font-mono)", marginTop: 2 }}>{tool.path}</div>
+              </div>
+              <div style={{ display: "flex", alignItems: "center", gap: 6, flexShrink: 0 }}>
+                {isConfigured && (
+                  <span style={{ fontSize: 11, color: "var(--text-green)", fontWeight: 500 }}>✓</span>
+                )}
+                {isConfigured && (
+                  <button className="btn btn-small btn-danger" disabled={isLoading} onClick={() => handleRemove(tool.id)}>
+                    {isLoading ? "..." : "Remove"}
+                  </button>
+                )}
+                <button
+                  className="btn btn-small btn-secondary"
+                  disabled={!isRunning || isLoading}
+                  onClick={() => handleConfigure(tool.id)}
+                >
+                  {isLoading ? "..." : isConfigured ? "Update" : "Configure"}
+                </button>
+              </div>
+            </div>
+          );
+        })}
+
+        {/* Cursor */}
+        <div className="client-tool-row" style={{ borderBottom: "none" }}>
+          <div className="tool-info">
+            <div style={{ fontSize: 13, fontWeight: 500, color: "var(--text)" }}>Cursor</div>
+            <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 2 }}>Settings → Models → API Base URL</div>
+          </div>
+          <button
+            className="btn btn-small btn-secondary"
+            disabled={!isRunning}
+            onClick={() => {
+              navigator.clipboard.writeText(proxyUrl);
+              setNotice(`Copied ${proxyUrl} — paste into Cursor Settings → Models → API Base URL`);
+            }}
+          >
+            Copy URL
+          </button>
         </div>
       </div>
-
     </div>
   );
 }

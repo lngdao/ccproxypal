@@ -48,17 +48,21 @@ function SourceBadge({ source }: { source: RequestRecord["source"] }) {
   );
 }
 
+const PAGE_SIZE = 20;
+
 export default function AnalyticsPanel() {
   const [summary, setSummary] = useState<AnalyticsSummary | null>(null);
   const [period, setPeriod] = useState<Period>("day");
   const [loading, setLoading] = useState(false);
   const [resetting, setResetting] = useState(false);
+  const [page, setPage] = useState(0);
 
   const load = async (p: Period) => {
     setLoading(true);
     try {
-      const data = await api.getAnalytics(p, 100);
+      const data = await api.getAnalytics(p, 500);
       setSummary(data);
+      setPage(0);
     } finally {
       setLoading(false);
     }
@@ -92,7 +96,7 @@ export default function AnalyticsPanel() {
           ))}
         </div>
         <button
-          className="btn btn-small btn-danger"
+          className="btn btn-danger"
           onClick={handleReset}
           disabled={resetting}
         >
@@ -147,44 +151,71 @@ export default function AnalyticsPanel() {
             </div>
             {summary.requests.length === 0 ? (
               <div className="empty-state">No requests yet. Start the proxy and make some API calls.</div>
-            ) : (
-              <div className="table-wrapper">
-                <table className="requests-table">
-                  <thead>
-                    <tr>
-                      <th>Time</th>
-                      <th>Model</th>
-                      <th>Source</th>
-                      <th>In</th>
-                      <th>Out</th>
-                      <th>Cost</th>
-                      <th>Latency</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {summary.requests.map((req) => (
-                      <tr key={req.id} className={req.source === "error" ? "row-error" : ""}>
-                        <td className="mono" style={{ fontSize: 11 }}>
-                          {formatTime(req.timestamp)}
-                        </td>
-                        <td className="mono" style={{ fontSize: 11, maxWidth: 160, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                          {req.model}
-                        </td>
-                        <td>
-                          <SourceBadge source={req.source} />
-                        </td>
-                        <td className="mono">{formatTokens(req.input_tokens)}</td>
-                        <td className="mono">{formatTokens(req.output_tokens)}</td>
-                        <td className="mono">{formatCost(req.estimated_cost)}</td>
-                        <td className="mono">
-                          {req.latency_ms != null ? `${req.latency_ms}ms` : "—"}
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )}
+            ) : (() => {
+                const totalPages = Math.ceil(summary.requests.length / PAGE_SIZE);
+                const pageItems = summary.requests.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE);
+                return (
+                  <>
+                    <div className="table-wrapper">
+                      <table className="requests-table">
+                        <thead>
+                          <tr>
+                            <th>Time</th>
+                            <th>Model</th>
+                            <th>Source</th>
+                            <th>In</th>
+                            <th>Out</th>
+                            <th>Cost</th>
+                            <th>Latency</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {pageItems.map((req) => (
+                            <tr key={req.id} className={req.source === "error" ? "row-error" : ""}>
+                              <td className="mono" style={{ fontSize: 11 }}>
+                                {formatTime(req.timestamp)}
+                              </td>
+                              <td className="mono" style={{ fontSize: 11, maxWidth: 160, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                                {req.model}
+                              </td>
+                              <td>
+                                <SourceBadge source={req.source} />
+                              </td>
+                              <td className="mono">{formatTokens(req.input_tokens)}</td>
+                              <td className="mono">{formatTokens(req.output_tokens)}</td>
+                              <td className="mono">{formatCost(req.estimated_cost)}</td>
+                              <td className="mono">
+                                {req.latency_ms != null ? `${req.latency_ms}ms` : "—"}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                    {totalPages > 1 && (
+                      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "10px 0 2px" }}>
+                        <button
+                          className="btn btn-small btn-secondary"
+                          onClick={() => setPage((p) => p - 1)}
+                          disabled={page === 0}
+                        >
+                          ← Prev
+                        </button>
+                        <span style={{ fontSize: 12, color: "var(--text-muted, #888)" }}>
+                          Page {page + 1} / {totalPages} · {summary.requests.length} total
+                        </span>
+                        <button
+                          className="btn btn-small btn-secondary"
+                          onClick={() => setPage((p) => p + 1)}
+                          disabled={page >= totalPages - 1}
+                        >
+                          Next →
+                        </button>
+                      </div>
+                    )}
+                  </>
+                );
+              })()}
           </div>
         </>
       )}

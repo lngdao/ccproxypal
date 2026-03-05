@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-03-05
+
+### Fixed
+- **Analytics streaming tokens** — Token usage (input/output) was recorded as 0 for streaming requests; now correctly parsed from SSE `message_start`/`message_delta` events
+- **Linux ARM64 CI** — Switched `reqwest` from `native-tls` to `rustls-tls` to fix `openssl-sys` cross-compilation failure
+- **macOS x86_64 CI** — Replaced deprecated `macos-13` runner with `macos-latest` (cross-compiles to `x86_64-apple-darwin`)
+
+### Changed
+- **UI overhaul** — Dashboard, Client, and Settings tabs redesigned with consistent card layout, improved typography and spacing
+- **Tab transitions** — Replaced horizontal slide with blur-fade animation; removed staggered card entrance animations
+- **App header** — Centered tab navigation, solid background, white separator; removed redundant app title from custom header
+- **Settings tab** — Sticky "Save Settings" button at bottom; improved section hierarchy, labels, and hints; styled bot command badges
+- **Analytics tab** — Recent requests table now paginated (20 per page) instead of showing all records
+- **Dashboard tab** — Removed "Client Setup" section; refined OAuth hint message
+- **macOS scroll** — Disabled rubber-band bounce via CSS `overscroll-behavior: none`; hidden scrollbars on all scrollable areas
+
 ## [0.1.0] - 2026-03-05
 
 ### Added

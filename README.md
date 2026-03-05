@@ -1,6 +1,6 @@
 # ccproxypal
 
-A desktop app (Tauri + React) and CLI tool that routes AI API requests through your Claude Code OAuth subscription — use Claude for free before falling back to a paid API key.
+A desktop app (Tauri + React) and CLI tool that routes AI API requests through your Claude Pro/Max subscription via Claude Code OAuth — share your subscription across multiple tools or host a proxy for your team.
 
 ## Features
 
@@ -21,7 +21,7 @@ A desktop app (Tauri + React) and CLI tool that routes AI API requests through y
 
 ### Installation (macOS)
 
-Download the latest `.dmg` from [Releases](https://github.com/longdao/ccproxypal/releases), drag the app to `/Applications`, then remove the quarantine flag before opening:
+Download the latest `.dmg` from [releases](https://github.com/lngdao/ccproxypal/releases), drag the app to `/Applications`, then remove the quarantine flag before opening:
 
 ```bash
 sudo xattr -rd com.apple.quarantine /Applications/ccproxypal.app

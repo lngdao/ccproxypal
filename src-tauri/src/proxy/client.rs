@@ -137,23 +137,17 @@ pub async fn proxy_request(
     endpoint: &str,
     body: Value,
     config: Arc<ProxyConfig>,
-    token_cache: Arc<tokio::sync::Mutex<Option<TokenInfo>>>,
+    token_cache: Arc<std::sync::Mutex<Option<TokenInfo>>>,
     user_api_key: Option<String>,
 ) -> Result<(reqwest::Response, ProxySource)> {
     if config.claude_code_first {
-        // Try to get a valid token
-        let cached = {
-            let lock = token_cache.lock().await;
-            lock.clone()
-        };
+        // Read cached token with sync lock (held briefly, no await inside).
+        let cached = { token_cache.lock().unwrap().clone() };
 
         match get_valid_token(cached).await {
             Ok(token) => {
-                // Update cache
-                {
-                    let mut lock = token_cache.lock().await;
-                    *lock = Some(token.clone());
-                }
+                // Write refreshed token back into the shared cache.
+                { *token_cache.lock().unwrap() = Some(token.clone()); }
 
                 match make_claude_code_request(endpoint, &body, &token).await {
                     Ok(resp) => {
@@ -162,23 +156,22 @@ pub async fn proxy_request(
                             200 => return Ok((resp, ProxySource::ClaudeCode)),
                             429 | 401 | 403 | 400 => {
                                 if status == 401 {
-                                    // Clear cached token
-                                    let mut lock = token_cache.lock().await;
-                                    *lock = None;
+                                    *token_cache.lock().unwrap() = None;
                                 }
+                                eprintln!("Claude Code returned {}, falling back to API key", status);
                                 // Fall through to API key
                             }
                             _ => return Ok((resp, ProxySource::ClaudeCode)),
                         }
                     }
                     Err(e) => {
-                        eprintln!("Claude Code request failed: {}", e);
+                        eprintln!("Claude Code request error: {}", e);
                         // Fall through to API key
                     }
                 }
             }
             Err(e) => {
-                eprintln!("Token error: {}", e);
+                eprintln!("Token load/refresh error: {}", e);
                 // Fall through to API key
             }
         }

@@ -73,13 +73,13 @@ impl Default for TelegramConfig {
 
 pub struct AppState {
     pub proxy_handle: Mutex<Option<ProxyServerHandle>>,
-    pub token_cache: Mutex<Option<TokenInfo>>,
+    /// Shared Arc — same object passed to the proxy server so UI refresh
+    /// and in-flight requests always see the same token.
+    pub token_cache: Arc<Mutex<Option<TokenInfo>>>,
     pub tunnel_process: Mutex<Option<std::process::Child>>,
     pub tunnel_url: Mutex<Option<String>>,
     pub db: Mutex<rusqlite::Connection>,
     pub config: Mutex<ProxyConfig>,
     pub telegram_config: Mutex<TelegramConfig>,
     pub telegram_handle: Mutex<Option<JoinHandle<()>>>,
-    /// Shared token cache for use across async task boundaries
-    pub token_cache_shared: Arc<Mutex<Option<TokenInfo>>>,
 }

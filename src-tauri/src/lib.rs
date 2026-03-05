@@ -22,18 +22,15 @@ pub fn run() {
     let conn = rusqlite::Connection::open(&db_path).expect("Failed to open SQLite database");
     init_db(&conn).expect("Failed to initialize database");
 
-    let token_cache_shared = std::sync::Arc::new(std::sync::Mutex::new(None));
-
     let app_state = AppState {
         proxy_handle: std::sync::Mutex::new(None),
-        token_cache: std::sync::Mutex::new(None),
+        token_cache: std::sync::Arc::new(std::sync::Mutex::new(None)),
         tunnel_process: std::sync::Mutex::new(None),
         tunnel_url: std::sync::Mutex::new(None),
         db: std::sync::Mutex::new(conn),
         config: std::sync::Mutex::new(ProxyConfig::default()),
         telegram_config: std::sync::Mutex::new(TelegramConfig::default()),
         telegram_handle: std::sync::Mutex::new(None),
-        token_cache_shared,
     };
 
     tauri::Builder::default()

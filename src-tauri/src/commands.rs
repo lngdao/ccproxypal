@@ -1,6 +1,5 @@
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter, Manager, State};
-use tokio::sync::Mutex as AsyncMutex;
 
 use crate::db::{self, AnalyticsSummary, BudgetSettings};
 use crate::oauth::get_valid_token;
@@ -27,13 +26,14 @@ pub async fn get_status(state: State<'_, AppState>) -> Result<AppStatus, String>
     let proxy_running = state.proxy_handle.lock().unwrap().is_some();
     let proxy_port = state.config.lock().unwrap().port;
 
-    let token_lock = state.token_cache.lock().unwrap();
-    let (token_valid, token_expires_at) = if let Some(t) = token_lock.as_ref() {
-        (!t.is_expired(), Some(t.expires_at))
-    } else {
-        (false, None)
+    let (token_valid, token_expires_at) = {
+        let lock = state.token_cache.lock().unwrap();
+        if let Some(t) = lock.as_ref() {
+            (!t.is_expired(), Some(t.expires_at))
+        } else {
+            (false, None)
+        }
     };
-    drop(token_lock);
 
     let tunnel_running = state.tunnel_process.lock().unwrap().is_some();
     let tunnel_url = state.tunnel_url.lock().unwrap().clone();
@@ -61,11 +61,13 @@ pub struct TokenStatus {
 
 #[tauri::command]
 pub async fn refresh_token(state: State<'_, AppState>) -> Result<TokenStatus, String> {
-    let cached = state.token_cache.lock().unwrap().clone();
+    let cached = { state.token_cache.lock().unwrap().clone() };
     match get_valid_token(cached).await {
         Ok(token) => {
             let expires_at = token.expires_at;
             *state.token_cache.lock().unwrap() = Some(token);
+            // token_cache is an Arc shared with the proxy server —
+            // the proxy server sees the updated token immediately.
             Ok(TokenStatus {
                 valid: true,
                 expires_at: Some(expires_at),
@@ -97,11 +99,6 @@ pub async fn start_proxy(state: State<'_, AppState>) -> Result<String, String> {
     let config = state.config.lock().unwrap().clone();
     let port = config.port;
 
-    // Build shared state for the axum server
-    let token_cache = Arc::new(AsyncMutex::new(
-        state.token_cache.lock().unwrap().clone(),
-    ));
-
     let db_path = {
         let db = state.db.lock().unwrap();
         db.path().map(|p| p.to_string()).unwrap_or_else(|| "ccproxypal.db".to_string())
@@ -109,7 +106,8 @@ pub async fn start_proxy(state: State<'_, AppState>) -> Result<String, String> {
 
     let server_state = ServerState {
         config: Arc::new(config),
-        token_cache: token_cache.clone(),
+        // Share the SAME Arc — UI refresh_token and proxy server both see the same token.
+        token_cache: state.token_cache.clone(),
         db_path,
     };
 
@@ -309,10 +307,8 @@ pub async fn start_telegram_bot(
 
     let port = state.config.lock().unwrap().port;
 
-    // Build shared references for the bot context
-    let token_cache = Arc::new(std::sync::Mutex::new(
-        state.token_cache.lock().unwrap().clone(),
-    ));
+    // Share the same token_cache Arc as AppState and the proxy server.
+    let token_cache = state.token_cache.clone();
     let proxy_running = Arc::new(std::sync::Mutex::new(
         state.proxy_handle.lock().unwrap().is_some(),
     ));
@@ -333,23 +329,17 @@ pub async fn start_telegram_bot(
         proxy_running,
     };
 
-    // Spawn a task that also keeps tunnel_url in sync via periodic read from state
     let tunnel_url_shared = ctx.tunnel_url.clone();
-    let token_cache_shared = ctx.token_cache.clone();
 
     let join = tokio::spawn(async move {
-        // Sync tunnel URL from app state every 10 seconds
+        // Keep tunnel_url in sync from AppState every 10 seconds.
+        // (token_cache is already a shared Arc — no sync needed for tokens.)
         let sync_app = app_clone.clone();
         tokio::spawn(async move {
             loop {
-                {
-                    let state = sync_app.state::<AppState>();
-                    let url = state.tunnel_url.lock().unwrap().clone();
-                    *tunnel_url_shared.lock().unwrap() = url;
-
-                    let token = state.token_cache.lock().unwrap().clone();
-                    *token_cache_shared.lock().unwrap() = token;
-                }
+                let state = sync_app.state::<AppState>();
+                let url = state.tunnel_url.lock().unwrap().clone();
+                *tunnel_url_shared.lock().unwrap() = url;
                 tokio::time::sleep(std::time::Duration::from_secs(10)).await;
             }
         });

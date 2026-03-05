@@ -7,8 +7,7 @@ use axum::{
     Json, Router,
 };
 use serde_json::{json, Value};
-use std::sync::Arc;
-use tokio::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use crate::db::{self, NewRequest};
 use crate::proxy::adapter::{
@@ -21,6 +20,7 @@ use crate::state::{ProxyConfig, TokenInfo};
 #[derive(Clone)]
 pub struct ServerState {
     pub config: Arc<ProxyConfig>,
+    /// Shared with AppState — same Arc, so UI token refresh is visible here instantly.
     pub token_cache: Arc<Mutex<Option<TokenInfo>>>,
     pub db_path: String,
 }
@@ -74,15 +74,13 @@ fn check_ip_whitelist(headers: &HeaderMap, allowed_ips: &[String]) -> bool {
 }
 
 async fn health_handler(State(state): State<ServerState>) -> impl IntoResponse {
-    let token_lock = state.token_cache.lock().await;
-    let token_status = if let Some(t) = token_lock.as_ref() {
-        if t.is_expired() {
-            "expired"
+    let token_status = {
+        let lock = state.token_cache.lock().unwrap();
+        if let Some(t) = lock.as_ref() {
+            if t.is_expired() { "expired" } else { "valid" }
         } else {
-            "valid"
+            "not_loaded"
         }
-    } else {
-        "not_loaded"
     };
 
     Json(json!({

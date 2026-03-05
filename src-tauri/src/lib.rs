@@ -40,6 +40,7 @@ pub fn run() {
             get_status,
             refresh_token,
             load_token,
+            get_token_details,
             start_proxy,
             stop_proxy,
             start_tunnel,
@@ -58,6 +59,11 @@ pub fn run() {
             start_telegram_bot,
             stop_telegram_bot,
             get_telegram_status,
+            // Client mode
+            set_token_manually,
+            configure_tool,
+            remove_tool_config,
+            get_tool_config_status,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

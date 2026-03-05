@@ -1,10 +1,11 @@
 import { useEffect, useState, useCallback } from "react";
 import { listen } from "@tauri-apps/api/event";
-import { api, AppStatus, TelegramStatus } from "../lib/invoke";
+import { api, AppStatus, TelegramStatus, TokenDetails } from "../lib/invoke";
 
 function StatusDot({ active }: { active: boolean }) {
   return (
     <span
+      className={active ? "status-dot-active" : ""}
       style={{
         display: "inline-block",
         width: 10,
@@ -12,11 +13,12 @@ function StatusDot({ active }: { active: boolean }) {
         borderRadius: "50%",
         backgroundColor: active ? "#22c55e" : "#ef4444",
         marginRight: 8,
-        boxShadow: active ? "0 0 6px #22c55e88" : "none",
+        flexShrink: 0,
       }}
     />
   );
 }
+
 
 function formatExpiry(expiresAt: number | null): string {
   if (!expiresAt) return "Unknown";
@@ -35,12 +37,20 @@ export default function Dashboard() {
   const [error, setError] = useState<string | null>(null);
   const [cloudflaredAvailable, setCloudflaredAvailable] = useState(true);
   const [copied, setCopied] = useState(false);
+  const [tokenDetails, setTokenDetails] = useState<TokenDetails | null>(null);
+  const [copiedToken, setCopiedToken] = useState<"access" | "refresh" | null>(null);
 
   const fetchStatus = useCallback(async () => {
     try {
       const [s, tg] = await Promise.all([api.getStatus(), api.getTelegramStatus()]);
       setStatus(s);
       setTelegramStatus(tg);
+      if (s.token_valid) {
+        const details = await api.getTokenDetails();
+        setTokenDetails(details);
+      } else {
+        setTokenDetails(null);
+      }
     } catch (e) {
       setError(String(e));
     }
@@ -84,9 +94,19 @@ export default function Dashboard() {
       if (status?.proxy_running) {
         await api.stopProxy();
       } else {
+        if (!status?.token_valid) {
+          const tokenResult = await api.loadToken();
+          if (!tokenResult.valid) {
+            throw new Error(
+              tokenResult.error ||
+                "Failed to connect OAuth. Please run `claude auth login` in your terminal first."
+            );
+          }
+        }
         await api.startProxy();
       }
     });
+
 
   const toggleTunnel = () =>
     withLoading("tunnel", async () => {
@@ -106,16 +126,20 @@ export default function Dashboard() {
       }
     });
 
-  const refreshToken = () =>
-    withLoading("token", async () => {
-      await api.refreshToken();
-    });
-
   const copyUrl = () => {
     if (status?.tunnel_url) {
       navigator.clipboard.writeText(status.tunnel_url);
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
+    }
+  };
+
+  const copyToken = (type: "access" | "refresh") => {
+    const value = type === "access" ? tokenDetails?.access_token : tokenDetails?.refresh_token;
+    if (value) {
+      navigator.clipboard.writeText(value);
+      setCopiedToken(type);
+      setTimeout(() => setCopiedToken(null), 2000);
     }
   };
 
@@ -137,9 +161,13 @@ export default function Dashboard() {
           <button
             className={`btn ${status.proxy_running ? "btn-danger" : "btn-primary"}`}
             onClick={toggleProxy}
-            disabled={loading.proxy}
+            disabled={loading.proxy || loading.token}
           >
-            {loading.proxy ? "..." : status.proxy_running ? "Stop" : "Start"}
+            {loading.proxy || loading.token
+              ? "..."
+              : status.proxy_running
+              ? "Stop"
+              : "Start"}
           </button>
         </div>
         <div className="card-body">
@@ -159,42 +187,32 @@ export default function Dashboard() {
               <span className="value mono text-green">http://localhost:{status.proxy_port}</span>
             </div>
           )}
-        </div>
-      </div>
-
-      {/* OAuth Token Card */}
-      <div className="card">
-        <div className="card-header">
-          <div className="card-title">
-            <StatusDot active={status.token_valid} />
-            Claude OAuth Token
-          </div>
-          <button
-            className="btn btn-secondary"
-            onClick={refreshToken}
-            disabled={loading.token}
-          >
-            {loading.token ? "..." : "Refresh"}
-          </button>
-        </div>
-        <div className="card-body">
-          <div className="info-row">
-            <span className="label">Status</span>
+          <div className="info-row" style={{ marginTop: 8, paddingTop: 14, borderTop: "1px solid var(--border, #333)" }}>
+            <span className="label">
+              <StatusDot active={status.token_valid} />
+              Claude OAuth
+            </span>
             <span className={`value ${status.token_valid ? "text-green" : "text-red"}`}>
-              {status.token_valid ? "Valid" : "Invalid / Expired"}
+              {status.token_valid
+                ? status.token_expires_at
+                  ? `Valid · expires ${formatExpiry(status.token_expires_at)}`
+                  : "Valid"
+                : "Not connected"}
             </span>
           </div>
-          {status.token_expires_at && (
-            <div className="info-row">
-              <span className="label">Expires in</span>
-              <span className={`value ${status.token_valid ? "" : "text-red"}`}>
-                {formatExpiry(status.token_expires_at)}
-              </span>
+          {status.token_valid && tokenDetails && (
+            <div style={{ display: "flex", flexDirection: "row", gap: 6, marginTop: 6 }}>
+              <button className="btn btn-small btn-secondary" onClick={() => copyToken("access")}>
+                {copiedToken === "access" ? "Copied!" : "Copy Access Token"}
+              </button>
+              <button className="btn btn-small btn-secondary" onClick={() => copyToken("refresh")}>
+                {copiedToken === "refresh" ? "Copied!" : "Copy Refresh Token"}
+              </button>
             </div>
           )}
-          {!status.token_valid && (
+          {!status.token_valid && !status.proxy_running && (
             <div className="hint">
-              Run <code>claude /login</code> in your terminal to authenticate.
+              Run <code>claude auth login</code> in your terminal to authenticate, then click <strong>Start</strong>.
             </div>
           )}
         </div>

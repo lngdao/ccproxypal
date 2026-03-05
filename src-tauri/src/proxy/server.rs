@@ -138,13 +138,17 @@ async fn messages_handler(
             };
 
             if is_stream {
-                // Stream the response body directly
-                record_to_db(&state.db_path, &model, source_str, 0, 0, is_stream, start.elapsed().as_millis() as i64, 0.0, None);
-
                 let resp_headers = resp.headers().clone();
                 let status_code = StatusCode::from_u16(status.as_u16()).unwrap_or(StatusCode::OK);
                 let body_stream = resp.bytes_stream();
-                let axum_body = Body::from_stream(body_stream);
+                let intercepted = intercept_stream_for_usage(
+                    body_stream,
+                    state.db_path.clone(),
+                    model.clone(),
+                    source_str.to_string(),
+                    start,
+                );
+                let axum_body = Body::from_stream(intercepted);
 
                 let mut response = Response::new(axum_body);
                 *response.status_mut() = status_code;
@@ -230,10 +234,16 @@ async fn chat_completions_handler(
             };
 
             if is_stream {
-                record_to_db(&state.db_path, &model, source_str, 0, 0, true, start.elapsed().as_millis() as i64, 0.0, None);
-                // For streaming, convert Anthropic SSE to OpenAI SSE
+                // For streaming, convert Anthropic SSE to OpenAI SSE while tracking usage
                 let body_stream = resp.bytes_stream();
-                let converted = convert_stream_to_openai(body_stream, &original_model);
+                let converted = convert_stream_to_openai_with_usage(
+                    body_stream,
+                    &original_model,
+                    state.db_path.clone(),
+                    model.clone(),
+                    source_str.to_string(),
+                    start,
+                );
                 Response::builder()
                     .status(status)
                     .header("Content-Type", "text/event-stream")
@@ -274,15 +284,75 @@ async fn chat_completions_handler(
     }
 }
 
-fn convert_stream_to_openai(
+/// Pass the Anthropic SSE stream through unchanged, but extract usage events
+/// so we can record accurate token counts to the DB after streaming completes.
+fn intercept_stream_for_usage(
+    stream: impl futures_util::Stream<Item = Result<bytes::Bytes, reqwest::Error>> + Send + 'static,
+    db_path: String,
+    model: String,
+    source: String,
+    start: std::time::Instant,
+) -> impl futures_util::Stream<Item = Result<bytes::Bytes, std::convert::Infallible>> {
+    async_stream::stream! {
+        use futures_util::StreamExt;
+        let mut stream = Box::pin(stream);
+        let mut buffer = String::new();
+        let mut input_tokens: i64 = 0;
+        let mut output_tokens: i64 = 0;
+
+        while let Some(chunk) = stream.next().await {
+            let Ok(bytes) = chunk else { break };
+
+            buffer.push_str(&String::from_utf8_lossy(&bytes));
+
+            // Parse complete SSE events to extract usage (non-destructively)
+            let mut search = buffer.clone();
+            while let Some(pos) = search.find("\n\n") {
+                let event = search[..pos].to_string();
+                search = search[pos + 2..].to_string();
+                for line in event.lines() {
+                    if let Some(data) = line.strip_prefix("data: ") {
+                        if let Ok(json) = serde_json::from_str::<Value>(data) {
+                            match json["type"].as_str() {
+                                Some("message_start") => {
+                                    input_tokens = json["message"]["usage"]["input_tokens"]
+                                        .as_i64().unwrap_or(0);
+                                }
+                                Some("message_delta") => {
+                                    output_tokens = json["usage"]["output_tokens"]
+                                        .as_i64().unwrap_or(0);
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+                }
+            }
+
+            yield Ok(bytes);
+        }
+
+        let cost = estimate_cost(&model, input_tokens, output_tokens);
+        record_to_db(&db_path, &model, &source, input_tokens, output_tokens, true,
+            start.elapsed().as_millis() as i64, cost, None);
+    }
+}
+
+fn convert_stream_to_openai_with_usage(
     stream: impl futures_util::Stream<Item = Result<bytes::Bytes, reqwest::Error>> + Send + 'static,
     model: &str,
+    db_path: String,
+    anthropic_model: String,
+    source: String,
+    start: std::time::Instant,
 ) -> impl futures_util::Stream<Item = Result<bytes::Bytes, std::convert::Infallible>> {
     let model = model.to_string();
     async_stream::stream! {
         use futures_util::StreamExt;
         let mut stream = Box::pin(stream);
         let mut buffer = String::new();
+        let mut input_tokens: i64 = 0;
+        let mut output_tokens: i64 = 0;
 
         while let Some(chunk) = stream.next().await {
             let Ok(bytes) = chunk else { break };
@@ -301,6 +371,14 @@ fn convert_stream_to_openai(
                         if let Ok(event_json) = serde_json::from_str::<Value>(data) {
                             let event_type = event_json["type"].as_str().unwrap_or("");
                             match event_type {
+                                "message_start" => {
+                                    input_tokens = event_json["message"]["usage"]["input_tokens"]
+                                        .as_i64().unwrap_or(0);
+                                }
+                                "message_delta" => {
+                                    output_tokens = event_json["usage"]["output_tokens"]
+                                        .as_i64().unwrap_or(0);
+                                }
                                 "content_block_delta" => {
                                     if let Some(text) = event_json["delta"]["text"].as_str() {
                                         let chunk = json!({
@@ -340,6 +418,10 @@ fn convert_stream_to_openai(
                 }
             }
         }
+
+        let cost = estimate_cost(&anthropic_model, input_tokens, output_tokens);
+        record_to_db(&db_path, &anthropic_model, &source, input_tokens, output_tokens, true,
+            start.elapsed().as_millis() as i64, cost, None);
     }
 }
 

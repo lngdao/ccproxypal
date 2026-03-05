@@ -112,7 +112,7 @@ export default function AnalyticsPanel() {
             </div>
             <div className="stat-card green">
               <div className="stat-value">{summary.claude_code_requests}</div>
-              <div className="stat-label">Claude Code (Free)</div>
+              <div className="stat-label">Claude Code</div>
             </div>
             <div className="stat-card amber">
               <div className="stat-value">{summary.api_key_requests}</div>

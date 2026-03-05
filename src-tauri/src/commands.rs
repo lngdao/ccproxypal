@@ -87,6 +87,27 @@ pub async fn load_token(state: State<'_, AppState>) -> Result<TokenStatus, Strin
     refresh_token(state).await
 }
 
+#[derive(serde::Serialize)]
+pub struct TokenDetails {
+    pub access_token: Option<String>,
+    pub refresh_token: Option<String>,
+}
+
+#[tauri::command]
+pub async fn get_token_details(state: State<'_, AppState>) -> Result<TokenDetails, String> {
+    let lock = state.token_cache.lock().unwrap();
+    match lock.as_ref() {
+        Some(t) => Ok(TokenDetails {
+            access_token: Some(t.access_token.clone()),
+            refresh_token: Some(t.refresh_token.clone()),
+        }),
+        None => Ok(TokenDetails {
+            access_token: None,
+            refresh_token: None,
+        }),
+    }
+}
+
 // ─── Proxy server ─────────────────────────────────────────────────────────────
 
 #[tauri::command]
@@ -360,4 +381,143 @@ pub async fn stop_telegram_bot(state: State<'_, AppState>) -> Result<String, Str
     } else {
         Ok("Telegram bot was not running".to_string())
     }
+}
+
+// ─── Client mode: manual token injection ─────────────────────────────────────
+
+#[tauri::command]
+pub async fn set_token_manually(
+    state: State<'_, AppState>,
+    access_token: String,
+    refresh_token: String,
+) -> Result<String, String> {
+    // Use 1-hour TTL for manually provided tokens
+    let expires_at = chrono::Utc::now().timestamp_millis() + 60 * 60 * 1000;
+    let token = crate::state::TokenInfo { access_token, refresh_token, expires_at };
+    *state.token_cache.lock().unwrap() = Some(token);
+    Ok("Token set successfully".to_string())
+}
+
+// ─── Tool configuration ───────────────────────────────────────────────────────
+
+#[derive(serde::Serialize)]
+pub struct ToolConfigStatus {
+    pub claude_code: bool,
+    pub opencode: bool,
+}
+
+#[tauri::command]
+pub async fn get_tool_config_status(state: State<'_, AppState>) -> Result<ToolConfigStatus, String> {
+    let proxy_url = {
+        let tunnel = state.tunnel_url.lock().unwrap().clone();
+        let port = state.config.lock().unwrap().port;
+        tunnel.unwrap_or_else(|| format!("http://localhost:{}", port))
+    };
+
+    let claude_code = check_tool_configured("claude_code", &proxy_url).await;
+    let opencode = check_tool_configured("opencode", &proxy_url).await;
+
+    Ok(ToolConfigStatus { claude_code, opencode })
+}
+
+async fn check_tool_configured(tool: &str, proxy_url: &str) -> bool {
+    let home = match dirs::home_dir() {
+        Some(h) => h,
+        None => return false,
+    };
+    let path = match tool {
+        "claude_code" => home.join(".claude").join("settings.json"),
+        "opencode" => home.join(".config").join("opencode").join("config.json"),
+        _ => return false,
+    };
+    if !path.exists() {
+        return false;
+    }
+    let content = match tokio::fs::read_to_string(&path).await {
+        Ok(c) => c,
+        Err(_) => return false,
+    };
+    content.contains(proxy_url)
+}
+
+#[tauri::command]
+pub async fn configure_tool(
+    state: State<'_, AppState>,
+    tool: String,
+) -> Result<String, String> {
+    let proxy_url = {
+        let tunnel = state.tunnel_url.lock().unwrap().clone();
+        let port = state.config.lock().unwrap().port;
+        tunnel.unwrap_or_else(|| format!("http://localhost:{}", port))
+    };
+
+    let home = dirs::home_dir().ok_or("Cannot find home directory")?;
+
+    match tool.as_str() {
+        "claude_code" => {
+            let path = home.join(".claude").join("settings.json");
+            write_env_to_json(&path, &proxy_url).await
+        }
+        "opencode" => {
+            let path = home.join(".config").join("opencode").join("config.json");
+            write_env_to_json(&path, &proxy_url).await
+        }
+        _ => Err(format!("Unknown tool: {}", tool)),
+    }
+}
+
+#[tauri::command]
+pub async fn remove_tool_config(tool: String) -> Result<String, String> {
+    let home = dirs::home_dir().ok_or("Cannot find home directory")?;
+    let path = match tool.as_str() {
+        "claude_code" => home.join(".claude").join("settings.json"),
+        "opencode" => home.join(".config").join("opencode").join("config.json"),
+        _ => return Err(format!("Unknown tool: {}", tool)),
+    };
+
+    if !path.exists() {
+        return Ok("Nothing to remove".to_string());
+    }
+
+    let content = tokio::fs::read_to_string(&path).await.map_err(|e| e.to_string())?;
+    let mut settings: serde_json::Value =
+        serde_json::from_str(&content).unwrap_or(serde_json::json!({}));
+
+    if let Some(env) = settings.get_mut("env").and_then(|e| e.as_object_mut()) {
+        env.remove("ANTHROPIC_BASE_URL");
+        env.remove("ANTHROPIC_AUTH_TOKEN");
+        if env.is_empty() {
+            settings.as_object_mut().unwrap().remove("env");
+        }
+    }
+
+    tokio::fs::write(&path, serde_json::to_string_pretty(&settings).unwrap())
+        .await
+        .map_err(|e| e.to_string())?;
+
+    Ok("Config removed".to_string())
+}
+
+async fn write_env_to_json(path: &std::path::Path, proxy_url: &str) -> Result<String, String> {
+    let mut settings: serde_json::Value = if path.exists() {
+        let content = tokio::fs::read_to_string(path).await.unwrap_or_default();
+        serde_json::from_str(&content).unwrap_or(serde_json::json!({}))
+    } else {
+        serde_json::json!({})
+    };
+
+    if settings.get("env").is_none() {
+        settings["env"] = serde_json::json!({});
+    }
+    settings["env"]["ANTHROPIC_BASE_URL"] = serde_json::Value::String(proxy_url.to_string());
+    settings["env"]["ANTHROPIC_AUTH_TOKEN"] = serde_json::Value::String("any-dummy-key".to_string());
+
+    if let Some(parent) = path.parent() {
+        tokio::fs::create_dir_all(parent).await.map_err(|e| e.to_string())?;
+    }
+    tokio::fs::write(path, serde_json::to_string_pretty(&settings).unwrap())
+        .await
+        .map_err(|e| e.to_string())?;
+
+    Ok(format!("Configured successfully: {}", path.display()))
 }

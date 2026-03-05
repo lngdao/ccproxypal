@@ -77,7 +77,7 @@ pub async fn load_credentials() -> Result<TokenInfo> {
         Ok(c) => c,
         Err(_) => load_from_file()
             .await
-            .map_err(|_| anyhow!("No Claude credentials found. Please run 'claude /login' first."))?,
+            .map_err(|_| anyhow!("No Claude credentials found. Please run 'claude auth login' first."))?,
     };
 
     Ok(TokenInfo {

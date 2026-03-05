@@ -16,6 +16,11 @@ export interface TokenStatus {
   error: string | null;
 }
 
+export interface TokenDetails {
+  access_token: string | null;
+  refresh_token: string | null;
+}
+
 export interface ProxyConfig {
   port: number;
   claude_code_first: boolean;
@@ -77,6 +82,7 @@ export const api = {
   getStatus: () => invoke<AppStatus>("get_status"),
   refreshToken: () => invoke<TokenStatus>("refresh_token"),
   loadToken: () => invoke<TokenStatus>("load_token"),
+  getTokenDetails: () => invoke<TokenDetails>("get_token_details"),
 
   startProxy: () => invoke<string>("start_proxy"),
   stopProxy: () => invoke<string>("stop_proxy"),
@@ -102,4 +108,16 @@ export const api = {
   startTelegramBot: () => invoke<string>("start_telegram_bot"),
   stopTelegramBot: () => invoke<string>("stop_telegram_bot"),
   getTelegramStatus: () => invoke<TelegramStatus>("get_telegram_status"),
+
+  // Client mode
+  setTokenManually: (accessToken: string, refreshToken: string) =>
+    invoke<string>("set_token_manually", { accessToken, refreshToken }),
+  configureTool: (tool: string) => invoke<string>("configure_tool", { tool }),
+  removeToolConfig: (tool: string) => invoke<string>("remove_tool_config", { tool }),
+  getToolConfigStatus: () => invoke<ToolConfigStatus>("get_tool_config_status"),
 };
+
+export interface ToolConfigStatus {
+  claude_code: boolean;
+  opencode: boolean;
+}

@@ -1,0 +1,17 @@
+{
+  "name": "ccproxypal",
+  "version": "1.0.0",
+  "description": "Local proxy server that routes AI API requests through your Claude Code OAuth subscription",
+  "type": "module",
+  "bin": {
+    "ccproxypal": "./bin/ccproxypal.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "keywords": ["claude", "oauth", "anthropic", "proxy", "openai", "cli"],
+  "license": "MIT",
+  "devDependencies": {
+    "shadcn": "^3.8.5"
+  }
+}

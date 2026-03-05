@@ -65,7 +65,7 @@ body {
 
 .tab-nav {
   display: flex;
-  gap: 4px;
+  gap: 2px;
   background: var(--bg);
   padding: 4px;
   border-radius: 8px;
@@ -73,15 +73,20 @@ body {
 }
 
 .tab-nav-btn {
+  position: relative;
   background: none;
   border: none;
   color: var(--text-muted);
-  padding: 6px 16px;
+  padding: 6px 14px;
   border-radius: 6px;
   font-size: 13px;
   font-weight: 500;
   cursor: pointer;
-  transition: all 0.15s;
+  transition: color 0.15s;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  z-index: 1;
 }
 
 .tab-nav-btn:hover {
@@ -89,9 +94,17 @@ body {
 }
 
 .tab-nav-btn.active {
-  background: var(--accent);
   color: #fff;
 }
+
+.tab-active-indicator {
+  position: absolute;
+  inset: 0;
+  background: var(--accent);
+  border-radius: 6px;
+  z-index: -1;
+}
+
 
 /* ─── Main ────────────────────────────────────────────────────────────────── */
 
@@ -479,4 +492,128 @@ body {
 
 .row-error td {
   background: #1c02024a;
+}
+
+/* ─── Animated status dot ─────────────────────────────────────────────────── */
+
+@keyframes pulse-glow {
+  0%, 100% { box-shadow: 0 0 4px #22c55e88; }
+  50%       { box-shadow: 0 0 10px #22c55ecc, 0 0 18px #22c55e55; }
+}
+
+.status-dot-active {
+  animation: pulse-glow 2s ease-in-out infinite;
+}
+
+/* ─── Animated card ────────────────────────────────────────────────────────── */
+
+.card {
+  transition: box-shadow 0.2s ease, border-color 0.2s ease;
+}
+
+.card:hover {
+  border-color: #3a3d4a;
+  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.3);
+}
+
+/* ─── Client panel ─────────────────────────────────────────────────────────── */
+
+.client-panel {}
+
+.token-input-group {
+  position: relative;
+}
+
+.token-input-group input {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  padding-right: 70px;
+}
+
+.token-input-suffix {
+  position: absolute;
+  right: 10px;
+  top: 50%;
+  transform: translateY(-50%);
+  font-size: 11px;
+  color: var(--text-muted);
+  pointer-events: none;
+}
+
+.tools-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.tool-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  transition: border-color 0.15s;
+}
+
+.tool-row:hover {
+  border-color: #3a3d4a;
+}
+
+.tool-row.configured {
+  border-color: #166534;
+  background: #052e1620;
+}
+
+.tool-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.tool-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.tool-path {
+  font-size: 11px;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  margin-top: 2px;
+}
+
+.tool-badge {
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 99px;
+  font-weight: 500;
+  background: #166534;
+  color: #86efac;
+  white-space: nowrap;
+}
+
+/* ─── Proxy status badge ───────────────────────────────────────────────────── */
+
+.proxy-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border-radius: 99px;
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.proxy-badge.running {
+  background: #052e16;
+  color: #86efac;
+  border: 1px solid #166534;
+}
+
+.proxy-badge.stopped {
+  background: #1a1d27;
+  color: var(--text-muted);
+  border: 1px solid var(--border);
 }

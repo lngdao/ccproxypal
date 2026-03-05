@@ -30,28 +30,54 @@ function jsonResponse(res, status, body) {
 
 // ─── Upstream request to Anthropic API ───────────────────────────────────────
 
+function sanitizeBody(body) {
+  const b = injectClaudeCodeSystem(body);
+  // Remove fields the Anthropic OAuth API doesn't support
+  delete b.reasoning_budget;
+  delete b.context_management;
+  // Filter out tools with null/empty names (Cursor sends placeholder entries)
+  if (Array.isArray(b.tools)) {
+    b.tools = b.tools
+      .map((t) => {
+        if (t.type === 'custom' && t.custom) {
+          const { name, description, input_schema } = t.custom;
+          return (name && typeof name === 'string') ? { name, description, input_schema } : null;
+        }
+        return (t.name && typeof t.name === 'string') ? t : null;
+      })
+      .filter(Boolean);
+    if (b.tools.length === 0) delete b.tools;
+  }
+  return b;
+}
+
 async function callAnthropic(body, reqHeaders) {
+  const makeRequest = async (accessToken) =>
+    fetch(`${ANTHROPIC_API_BASE}/v1/messages`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${accessToken}`,
+        'anthropic-beta': [reqHeaders['anthropic-beta'], CLAUDE_CODE_BETA].filter(Boolean).join(','),
+        'anthropic-version': reqHeaders['anthropic-version'] ?? ANTHROPIC_VERSION,
+        'User-Agent': USER_AGENT,
+      },
+      body: JSON.stringify(sanitizeBody(body)),
+    });
+
   const { accessToken } = await getToken();
+  let res = await makeRequest(accessToken);
 
-  const upstreamBody = injectClaudeCodeSystem(body);
-
-  // Remove fields unsupported by Claude Code
-  delete upstreamBody.reasoning_budget;
-
-  const res = await fetch(`${ANTHROPIC_API_BASE}/v1/messages`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${accessToken}`,
-      'anthropic-beta': [reqHeaders['anthropic-beta'], CLAUDE_CODE_BETA].filter(Boolean).join(','),
-      'anthropic-version': reqHeaders['anthropic-version'] ?? ANTHROPIC_VERSION,
-      'User-Agent': USER_AGENT,
-    },
-    body: JSON.stringify(upstreamBody),
-  });
-
-  // On 401 clear cache so next request re-loads credentials
-  if (res.status === 401) clearTokenCache();
+  // On 401: clear cache, refresh token, retry once
+  if (res.status === 401) {
+    clearTokenCache();
+    try {
+      const { accessToken: newToken } = await getToken();
+      res = await makeRequest(newToken);
+    } catch {
+      // If refresh fails, return the original 401
+    }
+  }
 
   return res;
 }

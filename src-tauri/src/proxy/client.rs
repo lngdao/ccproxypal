@@ -1,5 +1,5 @@
 use anyhow::{anyhow, Result};
-use serde_json::Value;
+use serde_json::{json, Value};
 use std::sync::Arc;
 
 use crate::oauth::get_valid_token;
@@ -25,9 +25,42 @@ fn prepare_claude_code_body(mut body: Value, strip_unsupported: bool) -> Value {
     if let Some(obj) = body.as_object_mut() {
         obj.remove("reasoning_budget");
         if strip_unsupported {
-            // context_management is a Claude Code internal field rejected by the OAuth API.
-            // Enable "Strip unsupported fields" in Settings if you see "Extra inputs are not permitted".
             obj.remove("context_management");
+        }
+
+        // Some clients (e.g. Cursor) send placeholder tool entries with null fields.
+        // Anthropic rejects any tool where name is not a valid non-empty string.
+        // Also handle Claude Code's {type:"custom", custom:{name,...}} format by converting
+        // to the standard {name,description,input_schema} format.
+        if let Some(tools_val) = obj.get_mut("tools") {
+            if let Some(tools_arr) = tools_val.as_array_mut() {
+                let fixed: Vec<Value> = tools_arr
+                    .iter()
+                    .filter_map(|tool| {
+                        if tool.get("type").and_then(|t| t.as_str()) == Some("custom") {
+                            // Claude Code custom tool format → convert to standard
+                            let custom = tool.get("custom")?;
+                            let name = custom.get("name").and_then(|n| n.as_str())?;
+                            if name.is_empty() { return None; }
+                            let mut t = json!({ "name": name });
+                            if let Some(d) = custom.get("description") { t["description"] = d.clone(); }
+                            if let Some(s) = custom.get("input_schema") { t["input_schema"] = s.clone(); }
+                            Some(t)
+                        } else {
+                            // Standard format — drop if name is missing or null
+                            let name = tool.get("name").and_then(|n| n.as_str())?;
+                            if name.is_empty() { return None; }
+                            Some(tool.clone())
+                        }
+                    })
+                    .collect();
+                // Remove the tools field entirely if all entries were invalid
+                if fixed.is_empty() {
+                    obj.remove("tools");
+                } else {
+                    *tools_val = Value::Array(fixed);
+                }
+            }
         }
     }
 

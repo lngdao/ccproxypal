@@ -223,14 +223,15 @@ export default function ClientPanel() {
         <div className="client-tool-row" style={{ borderBottom: "none" }}>
           <div className="tool-info">
             <div style={{ fontSize: 13, fontWeight: 500, color: "var(--text)" }}>Cursor</div>
-            <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 2 }}>Settings → Models → API Base URL</div>
+            <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 2 }}>Settings → Models → API Base URL (requires HTTPS — enable Tunnel first)</div>
           </div>
           <button
             className="btn btn-small btn-secondary"
-            disabled={!isRunning}
+            disabled={!isRunning || !status?.tunnel_url}
+            title={!status?.tunnel_url ? "Enable Cloudflare Tunnel first — Cursor requires HTTPS" : undefined}
             onClick={() => {
-              navigator.clipboard.writeText(proxyUrl);
-              setNotice(`Copied ${proxyUrl} — paste into Cursor Settings → Models → API Base URL`);
+              const cursorUrl = `${proxyUrl}/v1`;
+              navigator.clipboard.writeText(cursorUrl);
             }}
           >
             Copy URL

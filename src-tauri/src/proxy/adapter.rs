@@ -99,6 +99,16 @@ pub fn openai_to_anthropic(openai: OpenAIChatRequest) -> AnthropicRequest {
             }
             "user" => {
                 let content = convert_user_content(&msg.content);
+                // Skip user messages with empty content — Anthropic rejects them
+                let is_empty = match &content {
+                    Value::String(s) => s.trim().is_empty(),
+                    Value::Array(a) => a.is_empty(),
+                    Value::Null => true,
+                    _ => false,
+                };
+                if is_empty {
+                    continue;
+                }
                 messages.push(json!({ "role": "user", "content": content }));
             }
             "assistant" => {
@@ -212,7 +222,8 @@ fn content_to_string(content: &Value) -> String {
 
 fn convert_user_content(content: &Option<Value>) -> Value {
     match content {
-        None => json!(""),
+        None => Value::Null,
+        Some(Value::Null) => Value::Null,
         Some(Value::String(s)) => json!(s),
         Some(Value::Array(parts)) => {
             let converted: Vec<Value> = parts

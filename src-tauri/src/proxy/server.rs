@@ -91,8 +91,43 @@ async fn health_handler(State(state): State<ServerState>) -> impl IntoResponse {
     }))
 }
 
-async fn models_handler() -> impl IntoResponse {
-    Json(get_models_list())
+async fn models_handler(State(state): State<ServerState>) -> impl IntoResponse {
+    let cached = { state.token_cache.lock().unwrap().clone() };
+    if let Ok(token) = crate::oauth::get_valid_token(cached).await {
+        *state.token_cache.lock().unwrap() = Some(token.clone());
+        let client = reqwest::Client::new();
+        if let Ok(resp) = client
+            .get("https://api.anthropic.com/v1/models")
+            .header("Authorization", format!("Bearer {}", token.access_token))
+            .header("anthropic-version", "2023-06-01")
+            .header("anthropic-beta", "claude-code-20250219,oauth-2025-04-20")
+            .send()
+            .await
+        {
+            if resp.status().is_success() {
+                if let Ok(anthropic_models) = resp.json::<Value>().await {
+                    // Convert Anthropic model list format to OpenAI-compatible format
+                    let now = chrono::Utc::now().timestamp();
+                    let models: Vec<Value> = anthropic_models["data"]
+                        .as_array()
+                        .unwrap_or(&vec![])
+                        .iter()
+                        .map(|m| {
+                            json!({
+                                "id": m["id"],
+                                "object": "model",
+                                "created": now,
+                                "owned_by": "anthropic"
+                            })
+                        })
+                        .collect();
+                    return Json(json!({ "object": "list", "data": models })).into_response();
+                }
+            }
+        }
+    }
+    // Fallback to static list
+    Json(get_models_list()).into_response()
 }
 
 async fn messages_handler(

@@ -11,7 +11,8 @@ let _cache = null;
 
 /** Inject tokens manually (client mode — no local credentials needed) */
 export function setManualToken(accessToken, refreshToken) {
-  _cache = { accessToken, refreshToken, expiresAt: Date.now() + 60 * 60 * 1000 };
+  // 55 min — lets the 5-min buffer trigger a refresh before actual expiry
+  _cache = { accessToken, refreshToken, expiresAt: Date.now() + 55 * 60 * 1000 };
 }
 
 function loadFromKeychain() {

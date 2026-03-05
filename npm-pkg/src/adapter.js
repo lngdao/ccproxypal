@@ -22,6 +22,11 @@ export function openaiToAnthropic(body) {
   for (const msg of convMsgs) {
     if (msg.role === 'user') {
       const content = convertUserContent(msg.content);
+      // Skip user messages with empty content — Anthropic rejects them
+      const isEmpty = Array.isArray(content) ? content.length === 0
+        : typeof content === 'string' ? content.trim().length === 0
+        : !content;
+      if (isEmpty) continue;
       anthropicMessages.push({ role: 'user', content });
     } else if (msg.role === 'assistant') {
       const content = convertAssistantContent(msg);
@@ -42,14 +47,24 @@ export function openaiToAnthropic(body) {
     }
   }
 
-  // Convert tool definitions
+  // Convert tool definitions — filter out entries with null/invalid names (e.g. Cursor placeholders)
   const anthropicTools = tools
-    ?.filter((t) => t.type === 'function' || t.name)
-    .map((t) =>
-      t.type === 'function'
-        ? { name: t.function.name, description: t.function.description, input_schema: t.function.parameters ?? { type: 'object', properties: {} } }
-        : t
-    );
+    ?.map((t) => {
+      // Claude Code format: {type:"custom", custom:{name,...}} → standard
+      if (t.type === 'custom' && t.custom) {
+        const { name, description, input_schema } = t.custom;
+        if (!name || typeof name !== 'string') return null;
+        return { name, description, input_schema };
+      }
+      // OpenAI format: {type:"function", function:{name,...}}
+      if (t.type === 'function' && t.function) {
+        return { name: t.function.name, description: t.function.description, input_schema: t.function.parameters ?? { type: 'object', properties: {} } };
+      }
+      // Already Anthropic format — drop if name is missing/null
+      if (!t.name || typeof t.name !== 'string') return null;
+      return t;
+    })
+    .filter(Boolean);
 
   return {
     model: model ?? 'claude-opus-4-5',

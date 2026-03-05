@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.4] - 2026-03-06
+
+### Fixed
+- **CLI (npm-pkg) Cursor compatibility** — Aligned with desktop app: skip user messages with empty content; filter tools with null/empty names (Cursor placeholders); strip `context_management` and invalid tools from request body; 401 retry with token refresh
+- **CLI manual token** — TTL set to 55 minutes (same as app) so refresh triggers before expiry
+
+### Changed
+- **Client tab** — Removed green notification message when copying Cursor API Base URL
+
 ## [0.1.3] - 2026-03-06
 
 ### Fixed

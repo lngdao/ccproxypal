@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.3] - 2026-03-06
+
+### Fixed
+- **Cloudflare Tunnel on macOS app build** — GUI apps launch without Homebrew in PATH; now uses `which`/`where` first, then checks known install paths (`/opt/homebrew/bin`, `/usr/local/bin`, `/snap/bin`, Windows `Program Files`) before failing
+- **Windows tunnel** — Added `CREATE_NO_WINDOW` flag to prevent console window flashing when spawning `cloudflared`
+- **Windows error message** — Shows download link instead of `brew install` on Windows
+
 ## [0.1.2] - 2026-03-05
 
 ### Fixed

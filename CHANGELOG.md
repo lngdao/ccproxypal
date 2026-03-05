@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-03-05
+
+### Fixed
+- **Client mode 401 retry** — When Anthropic rejects an expired access_token with 401, the proxy now automatically refreshes using the refresh_token and retries the request instead of falling back to API key
+- **OAuth refresh endpoint** — Fixed token refresh URL to `https://console.anthropic.com/oauth/token` with correct `application/x-www-form-urlencoded` format
+- **`context_management` field** — Added "Strip unsupported fields" setting to remove Claude Code-internal fields (e.g. `context_management`) rejected by the Anthropic OAuth API; fixes "No API key available and Claude Code OAuth failed" errors when using the proxy locally
+
+### Changed
+- **Client tab** — Removed checkmark indicator and "configured successfully" notice after tool configuration
+- **Settings tab** — "Save Settings" button now has fixed min-width to prevent layout shift on state change; removed stray hint text next to button; improved hint text for "Strip unsupported fields" option
+
 ## [0.1.1] - 2026-03-05
 
 ### Fixed

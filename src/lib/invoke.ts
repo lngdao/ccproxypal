@@ -32,6 +32,7 @@ export interface ProxyConfig {
   budget_daily: number | null;
   budget_weekly: number | null;
   budget_monthly: number | null;
+  strip_unsupported_fields: boolean;
 }
 
 export interface RequestRecord {

@@ -67,6 +67,20 @@ export default function SettingsPanel() {
           </label>
           <span className="hint">Try OAuth subscription before falling back to API key</span>
         </div>
+
+        <div className="form-group">
+          <label className="checkbox-label">
+            <input
+              type="checkbox"
+              checked={config.strip_unsupported_fields}
+              onChange={(e) => setConfig({ ...config, strip_unsupported_fields: e.target.checked })}
+            />
+            Strip unsupported fields
+          </label>
+          <span className="hint">
+            Enable if you see <em>"No API key available and Claude Code OAuth failed"</em> errors when using the proxy locally
+          </span>
+        </div>
       </div>
 
       <div className="card">
@@ -269,10 +283,10 @@ export default function SettingsPanel() {
       </div>
 
       <div className="save-row">
-        <button className="btn btn-primary" onClick={handleSave} disabled={saving}>
+        <button className="btn btn-primary" style={{ minWidth: 120 }} onClick={handleSave} disabled={saving}>
           {saving ? "Saving..." : saved ? "Saved!" : "Save Settings"}
         </button>
-        <span className="hint">Restart the proxy after changing port.</span>
+        <span className="hint" style={{ marginTop: 0 }}>Restart the proxy after changing port.</span>
       </div>
     </div>
   );

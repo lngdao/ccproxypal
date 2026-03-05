@@ -28,7 +28,7 @@ export default function App() {
 
   return (
     <div className="app">
-      <header className="app-header">
+      <header className="app-header" style={{ marginTop: "10px" }}>
         <motion.nav
           className="tab-nav"
           initial={{ opacity: 0, y: -8 }}

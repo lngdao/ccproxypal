@@ -21,10 +21,14 @@ pub enum ProxySource {
 /// Prepare the request body for Claude Code:
 /// - Inject required system prompt prefix
 /// - Remove unsupported fields (reasoning_budget, cache_control.ttl)
-fn prepare_claude_code_body(mut body: Value) -> Value {
-    // Remove reasoning_budget
+fn prepare_claude_code_body(mut body: Value, strip_unsupported: bool) -> Value {
     if let Some(obj) = body.as_object_mut() {
         obj.remove("reasoning_budget");
+        if strip_unsupported {
+            // context_management is a Claude Code internal field rejected by the OAuth API.
+            // Enable "Strip unsupported fields" in Settings if you see "Extra inputs are not permitted".
+            obj.remove("context_management");
+        }
     }
 
     // Build system prompt array
@@ -88,8 +92,9 @@ async fn make_claude_code_request(
     endpoint: &str,
     body: &Value,
     token: &TokenInfo,
+    strip_unsupported: bool,
 ) -> Result<reqwest::Response> {
-    let prepared = prepare_claude_code_body(body.clone());
+    let prepared = prepare_claude_code_body(body.clone(), strip_unsupported);
     let client = reqwest::Client::new();
 
     let response = client
@@ -149,23 +154,46 @@ pub async fn proxy_request(
                 // Write refreshed token back into the shared cache.
                 { *token_cache.lock().unwrap() = Some(token.clone()); }
 
-                match make_claude_code_request(endpoint, &body, &token).await {
+                let strip = config.strip_unsupported_fields;
+                match make_claude_code_request(endpoint, &body, &token, strip).await {
                     Ok(resp) => {
                         let status = resp.status().as_u16();
                         match status {
                             200 => return Ok((resp, ProxySource::ClaudeCode)),
-                            429 | 401 | 403 | 400 => {
-                                if status == 401 {
-                                    *token_cache.lock().unwrap() = None;
+                            401 => {
+                                eprintln!("[ccproxypal] Anthropic returned 401 — access_token rejected, attempting refresh");
+                                match crate::oauth::refresh_token(&token.refresh_token).await {
+                                    Ok(refreshed) => {
+                                        eprintln!("[ccproxypal] Token refresh succeeded, retrying request");
+                                        *token_cache.lock().unwrap() = Some(refreshed.clone());
+                                        match make_claude_code_request(endpoint, &body, &refreshed, strip).await {
+                                            Ok(resp2) => return Ok((resp2, ProxySource::ClaudeCode)),
+                                            Err(e) => eprintln!("[ccproxypal] Retry after refresh failed: {}", e),
+                                        }
+                                    }
+                                    Err(e) => {
+                                        eprintln!("[ccproxypal] Token refresh failed: {}", e);
+                                        *token_cache.lock().unwrap() = None;
+                                    }
                                 }
-                                eprintln!("Claude Code returned {}, falling back to API key", status);
                                 // Fall through to API key
                             }
-                            _ => return Ok((resp, ProxySource::ClaudeCode)),
+                            _ => {
+                                // For 400/403/429/5xx — log the body so we can debug
+                                let body_text = resp.text().await.unwrap_or_default();
+                                eprintln!("[ccproxypal] Anthropic returned {} — body: {}", status, &body_text[..body_text.len().min(500)]);
+                                // Fall through to API key only on retriable errors
+                                if status == 429 || status == 403 || status == 400 {
+                                    // Fall through to API key
+                                } else {
+                                    // For other statuses (e.g. 200 range edge cases, 5xx), return as error
+                                    return Err(anyhow::anyhow!("Anthropic error {}: {}", status, &body_text[..body_text.len().min(200)]));
+                                }
+                            }
                         }
                     }
                     Err(e) => {
-                        eprintln!("Claude Code request error: {}", e);
+                        eprintln!("[ccproxypal] Claude Code request network error: {}", e);
                         // Fall through to API key
                     }
                 }

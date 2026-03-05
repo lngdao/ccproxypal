@@ -94,7 +94,6 @@ export default function ClientPanel() {
   const handleConfigure = (toolId: string) =>
     withLoading(`tool_${toolId}`, async () => {
       await api.configureTool(toolId);
-      setNotice(`${TOOLS.find((t) => t.id === toolId)?.name} configured successfully.`);
     });
 
   const handleRemove = (toolId: string) =>
@@ -203,9 +202,6 @@ export default function ClientPanel() {
                 <div style={{ fontSize: 11, color: "var(--text-muted)", fontFamily: "var(--font-mono)", marginTop: 2 }}>{tool.path}</div>
               </div>
               <div style={{ display: "flex", alignItems: "center", gap: 6, flexShrink: 0 }}>
-                {isConfigured && (
-                  <span style={{ fontSize: 11, color: "var(--text-green)", fontWeight: 500 }}>✓</span>
-                )}
                 {isConfigured && (
                   <button className="btn btn-small btn-danger" disabled={isLoading} onClick={() => handleRemove(tool.id)}>
                     {isLoading ? "..." : "Remove"}

@@ -391,8 +391,10 @@ pub async fn set_token_manually(
     access_token: String,
     refresh_token: String,
 ) -> Result<String, String> {
-    // Use 1-hour TTL for manually provided tokens
-    let expires_at = chrono::Utc::now().timestamp_millis() + 60 * 60 * 1000;
+    // Set expires_at slightly in the future so the provided access_token is used as-is
+    // without triggering an immediate refresh. The 401-retry logic in proxy_request will
+    // handle the case where the token is actually expired.
+    let expires_at = chrono::Utc::now().timestamp_millis() + 55 * 60 * 1000; // 55 min
     let token = crate::state::TokenInfo { access_token, refresh_token, expires_at };
     *state.token_cache.lock().unwrap() = Some(token);
     Ok("Token set successfully".to_string())

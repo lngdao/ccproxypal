@@ -29,6 +29,9 @@ pub struct ProxyConfig {
     pub budget_daily: Option<f64>,
     pub budget_weekly: Option<f64>,
     pub budget_monthly: Option<f64>,
+    /// Strip fields unsupported by the Anthropic OAuth API (e.g. context_management).
+    /// Enable if you get "Extra inputs are not permitted" errors.
+    pub strip_unsupported_fields: bool,
 }
 
 impl Default for ProxyConfig {
@@ -44,6 +47,7 @@ impl Default for ProxyConfig {
             budget_daily: None,
             budget_weekly: None,
             budget_monthly: None,
+            strip_unsupported_fields: false,
         }
     }
 }

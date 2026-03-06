@@ -1,6 +1,6 @@
 {
   "name": "ccproxypal",
-  "version": "0.1.5",
+  "version": "0.2.0",
   "description": "Local proxy server that routes AI API requests through your Claude Code OAuth subscription",
   "type": "module",
   "bin": {

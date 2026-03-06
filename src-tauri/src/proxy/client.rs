@@ -4,7 +4,7 @@ use std::sync::Arc;
 use tauri::Emitter;
 
 use crate::oauth::get_valid_token;
-use crate::state::{ProxyConfig, TokenInfo};
+use crate::state::{ProxyConfig, TokenInfo, TokenPool};
 
 const ANTHROPIC_API_URL: &str = "https://api.anthropic.com";
 const CLAUDE_CODE_SYSTEM_PROMPT: &str =
@@ -170,13 +170,14 @@ async fn make_direct_api_request(
     Ok(response)
 }
 
-/// Core proxy function: try Claude Code OAuth first, fallback to API key.
+/// Core proxy function: try pool tokens first, then single token cache, fallback to API key.
 /// Returns the raw reqwest response for streaming support.
 pub async fn proxy_request(
     endpoint: &str,
     body: Value,
     config: Arc<ProxyConfig>,
     token_cache: Arc<std::sync::Mutex<Option<TokenInfo>>>,
+    token_pool: Arc<std::sync::Mutex<TokenPool>>,
     user_api_key: Option<String>,
     app: &tauri::AppHandle,
 ) -> Result<(reqwest::Response, ProxySource)> {
@@ -188,6 +189,84 @@ pub async fn proxy_request(
 
     let mut last_oauth_error: Option<String> = None;
 
+    // ── Phase 1: Try token pool (hub mode) ──────────────────────────────────
+    {
+        let pool_token = {
+            let mut pool = token_pool.lock().unwrap();
+            pool.next_token()
+        };
+        if let Some((provider_id, token)) = pool_token {
+            let strip = config.strip_unsupported_fields;
+            plog("debug", &format!("Using pool token from provider '{}'", provider_id));
+            match make_claude_code_request(endpoint, &body, &token, strip).await {
+                Ok(resp) => {
+                    let status = resp.status().as_u16();
+                    if status == 200 {
+                        return Ok((resp, ProxySource::ClaudeCode));
+                    }
+                    let body_text = resp.text().await.unwrap_or_default();
+                    if status == 401 || status == 403 {
+                        plog("warn", &format!("Pool token '{}' returned {} — {}", provider_id, status, body_text));
+                        {
+                            token_pool.lock().unwrap().mark_unhealthy(&provider_id);
+                        }
+                        last_oauth_error = Some(format!("Pool token '{}' error {}: {}", provider_id, status, body_text));
+
+                        // Try remaining healthy tokens in pool
+                        let remaining = {
+                            token_pool.lock().unwrap().healthy_count()
+                        };
+                        for _ in 0..remaining {
+                            let next = {
+                                token_pool.lock().unwrap().next_token()
+                            };
+                            if let Some((pid, tok)) = next {
+                                plog("debug", &format!("Retrying with pool token from '{}'", pid));
+                                match make_claude_code_request(endpoint, &body, &tok, strip).await {
+                                    Ok(r) => {
+                                        let s = r.status().as_u16();
+                                        if s == 200 {
+                                            return Ok((r, ProxySource::ClaudeCode));
+                                        }
+                                        let bt = r.text().await.unwrap_or_default();
+                                        plog("warn", &format!("Pool token '{}' returned {} — {}", pid, s, bt));
+                                        if s == 401 || s == 403 {
+                                            token_pool.lock().unwrap().mark_unhealthy(&pid);
+                                        }
+                                    }
+                                    Err(e) => plog("error", &format!("Pool token '{}' network error: {}", pid, e)),
+                                }
+                            } else {
+                                break;
+                            }
+                        }
+                    } else if status == 429 {
+                        plog("warn", &format!("Pool token '{}' rate limited (429) — {}", provider_id, body_text));
+                        let next = {
+                            token_pool.lock().unwrap().next_token()
+                        };
+                        if let Some((pid, tok)) = next {
+                            plog("debug", &format!("Retrying with pool token from '{}'", pid));
+                            if let Ok(r) = make_claude_code_request(endpoint, &body, &tok, strip).await {
+                                if r.status().as_u16() == 200 {
+                                    return Ok((r, ProxySource::ClaudeCode));
+                                }
+                            }
+                        }
+                        last_oauth_error = Some(format!("Pool rate limited: {}", body_text));
+                    } else {
+                        plog("error", &format!("Pool token '{}' error {} — {}", provider_id, status, body_text));
+                        return Err(anyhow::anyhow!("Anthropic error {}: {}", status, body_text));
+                    }
+                }
+                Err(e) => {
+                    plog("error", &format!("Pool token '{}' network error: {}", provider_id, e));
+                }
+            }
+        }
+    }
+
+    // ── Phase 2: Try single token cache (local mode) ────────────────────────
     if config.claude_code_first {
         // Read cached token with sync lock (held briefly, no await inside).
         let cached = { token_cache.lock().unwrap().clone() };

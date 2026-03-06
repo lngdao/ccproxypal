@@ -8,6 +8,8 @@ export interface AppStatus {
   tunnel_running: boolean;
   tunnel_url: string | null;
   telegram_running: boolean;
+  provider_running: boolean;
+  provider_hub_url: string | null;
 }
 
 export interface TokenStatus {
@@ -33,6 +35,22 @@ export interface ProxyConfig {
   budget_weekly: number | null;
   budget_monthly: number | null;
   strip_unsupported_fields: boolean;
+  hub_secret: string | null;
+}
+
+export interface PoolEntryStatus {
+  provider_id: string;
+  healthy: boolean;
+  expired: boolean;
+  expires_at: number;
+  provided_at: number;
+  last_used: number | null;
+}
+
+export interface PoolStatus {
+  total: number;
+  healthy: number;
+  entries: PoolEntryStatus[];
 }
 
 export interface RequestRecord {
@@ -83,6 +101,7 @@ export const api = {
   getStatus: () => invoke<AppStatus>("get_status"),
   refreshToken: () => invoke<TokenStatus>("refresh_token"),
   loadToken: () => invoke<TokenStatus>("load_token"),
+  reloadToken: () => invoke<TokenStatus>("reload_token"),
   getTokenDetails: () => invoke<TokenDetails>("get_token_details"),
 
   startProxy: () => invoke<string>("start_proxy"),
@@ -113,9 +132,15 @@ export const api = {
   // Client mode
   setTokenManually: (accessToken: string, refreshToken: string) =>
     invoke<string>("set_token_manually", { accessToken, refreshToken }),
-  configureTool: (tool: string) => invoke<string>("configure_tool", { tool }),
+  configureTool: (tool: string, url?: string) => invoke<string>("configure_tool", { tool, url }),
   removeToolConfig: (tool: string) => invoke<string>("remove_tool_config", { tool }),
   getToolConfigStatus: () => invoke<ToolConfigStatus>("get_tool_config_status"),
+
+  // Hub / pool
+  getPoolStatus: () => invoke<PoolStatus>("get_pool_status"),
+  startProvider: (hubUrl: string, hubSecret?: string) =>
+    invoke<string>("start_provider", { hubUrl, hubSecret }),
+  stopProvider: () => invoke<string>("stop_provider"),
 };
 
 export interface ToolConfigStatus {

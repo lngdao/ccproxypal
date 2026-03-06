@@ -1,6 +1,6 @@
 use axum::{
     body::Body,
-    extract::{Request, State},
+    extract::State,
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
     routing::{get, post},
@@ -12,17 +12,17 @@ use tauri::Emitter;
 
 use crate::db::{self, NewRequest};
 use crate::proxy::adapter::{
-    self, anthropic_to_openai, estimate_cost, get_models_list, openai_to_anthropic,
+    anthropic_to_openai, estimate_cost, get_models_list, openai_to_anthropic,
     OpenAIChatRequest,
 };
 use crate::proxy::client::{proxy_request, ProxySource};
-use crate::state::{ProxyConfig, TokenInfo};
+use crate::state::{ProxyConfig, TokenInfo, TokenPool};
 
 #[derive(Clone)]
 pub struct ServerState {
     pub config: Arc<ProxyConfig>,
-    /// Shared with AppState — same Arc, so UI token refresh is visible here instantly.
     pub token_cache: Arc<Mutex<Option<TokenInfo>>>,
+    pub token_pool: Arc<Mutex<TokenPool>>,
     pub db_path: String,
     pub app: tauri::AppHandle,
 }
@@ -171,6 +171,7 @@ async fn messages_handler(
         body_value,
         state.config.clone(),
         state.token_cache.clone(),
+        state.token_pool.clone(),
         user_api_key,
         &state.app,
     )
@@ -274,6 +275,7 @@ async fn chat_completions_handler(
         body_value,
         state.config.clone(),
         state.token_cache.clone(),
+        state.token_pool.clone(),
         user_api_key,
         &state.app,
     )
@@ -524,6 +526,94 @@ fn record_to_db(
     }
 }
 
+// ─── Hub provider endpoints ──────────────────────────────────────────────────
+
+#[derive(serde::Deserialize)]
+struct HubProvideRequest {
+    provider_id: String,
+    access_token: String,
+    refresh_token: String,
+    expires_at: i64,
+}
+
+fn check_hub_secret(headers: &HeaderMap, config: &ProxyConfig) -> bool {
+    let secret = match &config.hub_secret {
+        Some(s) if !s.is_empty() => s,
+        _ => return true, // no secret configured → open access
+    };
+    headers.get("authorization")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.strip_prefix("Bearer "))
+        .map_or(false, |tok| tok == secret)
+}
+
+async fn hub_provide_handler(
+    State(state): State<ServerState>,
+    headers: HeaderMap,
+    Json(body): Json<HubProvideRequest>,
+) -> Response {
+    if !check_hub_secret(&headers, &state.config) {
+        return (StatusCode::UNAUTHORIZED, Json(json!({"error": "Invalid hub secret"}))).into_response();
+    }
+    let token = TokenInfo {
+        access_token: body.access_token,
+        refresh_token: body.refresh_token,
+        expires_at: body.expires_at,
+    };
+    let provider_id = body.provider_id.clone();
+    state.token_pool.lock().unwrap().upsert(&provider_id, token);
+    let count = state.token_pool.lock().unwrap().healthy_count();
+    proxy_log(&state.app, "info", "hub", &format!("Provider '{}' pushed token (pool: {} healthy)", provider_id, count));
+    Json(json!({"ok": true, "pool_size": count})).into_response()
+}
+
+async fn hub_status_handler(
+    State(state): State<ServerState>,
+    headers: HeaderMap,
+) -> Response {
+    if !check_hub_secret(&headers, &state.config) {
+        return (StatusCode::UNAUTHORIZED, Json(json!({"error": "Invalid hub secret"}))).into_response();
+    }
+    let pool = state.token_pool.lock().unwrap();
+    let providers: Vec<Value> = pool.entries.iter().map(|e| {
+        json!({
+            "provider_id": e.provider_id,
+            "healthy": e.healthy,
+            "expired": e.token.is_expired(),
+            "provided_at": e.provided_at,
+            "last_used": e.last_used,
+            "expires_at": e.token.expires_at,
+        })
+    }).collect();
+    Json(json!({
+        "total": pool.entries.len(),
+        "healthy": pool.healthy_count(),
+        "providers": providers,
+    })).into_response()
+}
+
+#[derive(serde::Deserialize)]
+struct HubRevokeRequest {
+    provider_id: String,
+}
+
+async fn hub_revoke_handler(
+    State(state): State<ServerState>,
+    headers: HeaderMap,
+    Json(body): Json<HubRevokeRequest>,
+) -> Response {
+    if !check_hub_secret(&headers, &state.config) {
+        return (StatusCode::UNAUTHORIZED, Json(json!({"error": "Invalid hub secret"}))).into_response();
+    }
+    let removed = state.token_pool.lock().unwrap().remove(&body.provider_id);
+    if removed {
+        proxy_log(&state.app, "info", "hub", &format!("Provider '{}' revoked", body.provider_id));
+        Json(json!({"ok": true, "removed": true})).into_response()
+    } else {
+        Json(json!({"ok": true, "removed": false, "message": "Provider not found"})).into_response()
+    }
+}
+
 pub fn build_router(state: ServerState) -> Router {
     Router::new()
         .route("/", get(health_handler))
@@ -531,5 +621,9 @@ pub fn build_router(state: ServerState) -> Router {
         .route("/v1/messages", post(messages_handler))
         .route("/v1/chat/completions", post(chat_completions_handler))
         .route("/v1/models", get(models_handler))
+        // Hub endpoints
+        .route("/hub/provide", post(hub_provide_handler))
+        .route("/hub/status", get(hub_status_handler))
+        .route("/hub/revoke", post(hub_revoke_handler))
         .with_state(state)
 }

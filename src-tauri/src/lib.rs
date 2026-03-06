@@ -8,7 +8,7 @@ mod tunnel;
 
 use commands::*;
 use db::init_db;
-use state::{AppState, ProxyConfig, TelegramConfig};
+use state::{AppState, ProxyConfig, TelegramConfig, TokenPool};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -25,21 +25,26 @@ pub fn run() {
     let app_state = AppState {
         proxy_handle: std::sync::Mutex::new(None),
         token_cache: std::sync::Arc::new(std::sync::Mutex::new(None)),
+        token_pool: std::sync::Arc::new(std::sync::Mutex::new(TokenPool::default())),
         tunnel_process: std::sync::Mutex::new(None),
         tunnel_url: std::sync::Mutex::new(None),
         db: std::sync::Mutex::new(conn),
         config: std::sync::Mutex::new(ProxyConfig::default()),
         telegram_config: std::sync::Mutex::new(TelegramConfig::default()),
         telegram_handle: std::sync::Mutex::new(None),
+        provider_handle: std::sync::Mutex::new(None),
+        provider_hub_url: std::sync::Mutex::new(None),
     };
 
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_notification::init())
         .manage(app_state)
         .invoke_handler(tauri::generate_handler![
             get_status,
             refresh_token,
             load_token,
+            reload_token,
             get_token_details,
             start_proxy,
             stop_proxy,
@@ -64,6 +69,10 @@ pub fn run() {
             configure_tool,
             remove_tool_config,
             get_tool_config_status,
+            // Hub / pool
+            get_pool_status,
+            start_provider,
+            stop_provider,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -83,7 +83,7 @@ export async function getToken() {
     try {
       const refreshed = await doRefresh(_cache.refreshToken);
       _cache = refreshed;
-      return { accessToken: refreshed.accessToken, refreshToken: refreshed.refreshToken };
+      return refreshed;
     } catch {
       // Refresh failed — fall through to reload from disk
     }
@@ -95,7 +95,7 @@ export async function getToken() {
     creds = await doRefresh(creds.refreshToken);
   }
   _cache = creds;
-  return { accessToken: creds.accessToken, refreshToken: creds.refreshToken };
+  return creds;
 }
 
 export function clearTokenCache() {

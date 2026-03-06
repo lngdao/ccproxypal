@@ -87,6 +87,16 @@ pub async fn load_credentials() -> Result<TokenInfo> {
     })
 }
 
+/// Remove stale credentials from keychain and credentials file.
+pub async fn clear_credentials() {
+    let username = std::env::var("USER").unwrap_or_default();
+    let _ = tokio::process::Command::new("security")
+        .args(["delete-generic-password", "-a", &username, "-s", "Claude Code-credentials"])
+        .output()
+        .await;
+    let _ = tokio::fs::remove_file(credentials_file_path()).await;
+}
+
 /// Refresh the OAuth access token using the refresh token
 pub async fn refresh_token(refresh_token_value: &str) -> Result<TokenInfo> {
     let client = reqwest::Client::new();

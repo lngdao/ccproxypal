@@ -5,7 +5,59 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [Unreleased]   
+
+## [0.2.0] - 2026-03-06
+
+### Added
+
+#### UI/UX Rework & Tailwind Migration
+- **Tailwind CSS v4** — Migrated from 853 lines of vanilla CSS (`App.css`) to Tailwind utility classes via `@tailwindcss/vite` plugin; new `index.css` with CSS custom properties for theme tokens (`--color-bg`, `--color-accent`, etc.)
+- **Shared UI component library** (`src/components/ui/`)
+  - `Button` — Variant-based (primary/danger/secondary/ghost) with loading spinner overlay that preserves button width
+  - `Card`, `CardHeader`, `CardTitle` — Base card component
+  - `StepCard` — Numbered step card with completed (green checkmark) and disabled states
+  - `StatusDot`, `StatusBadge` — Pulsing green/red dot indicator with label
+  - `InfoRow` — Label-value row for status display
+  - `Input`, `TextArea` — Styled form inputs with label/hint support
+  - `SegmentedControl` — Generic segmented toggle replacing all tab-nav/mode-switch patterns
+  - `Toast` — Bottom-right auto-dismiss toast system with Zustand store (success/error/info types)
+- **Sidebar icon rail** (`App.tsx`) — 48px sidebar with icon navigation (Proxy, Analytics, Settings), resizable log panel with drag handle, log toggle with unread badge
+- **ProxyPanel** (`src/components/ProxyPanel.tsx`) — Unified panel replacing `Dashboard.tsx` + `ClientPanel.tsx` with 3-mode `SegmentedControl`:
+  - **Solo**: Step 1 (OAuth + Proxy) with token copy buttons + Step 2 (Configure Dev Tools)
+  - **Hub Host**: Steps 1-4 (Proxy, Tunnel, Token Pool, Telegram Bot)
+  - **Hub Consumer**: Step 1 (Connect to Hub) + Step 2 (Configure Dev Tools)
+- **OAuth Refresh button** — "Refresh" button next to Copy Access Token / Copy Refresh Token; calls Anthropic's `/v1/oauth/token` endpoint to force-refresh the access token
+- **`reload_token` Tauri command** — Force-refreshes OAuth token via API; preserves original `expires_at` when Anthropic returns the same access token (prevents inflated expiry display)
+
+#### Telegram Bot Remote Control
+- New commands: `/start_proxy`, `/stop_proxy`, `/tunnel`, `/pool`, `/usage`
+- Push notifications via `send_notification()` public function
+- `app_handle: Option<tauri::AppHandle>` added to `BotContext`
+
+#### Native OS Notifications
+- `tauri-plugin-notification` integration for desktop push notifications
+- `notify_telegram()`, `notify_os()`, `notify_all()` helper functions in `commands.rs`
+
+### Changed
+- **AnalyticsPanel** — Rewritten with Tailwind; `SegmentedControl` for period selection; 2x4 stat cards with colored borders; 2-step button confirmation for reset (replaces `confirm()` dialog)
+- **SettingsPanel** — Rewritten with Tailwind; 4 card sections + collapsible Telegram integrations; sticky save button with backdrop blur
+- **LogPanel** — Rewritten with Tailwind; log level filter buttons (INFO/WARN/ERROR/DEBUG); source filter dropdown; auto-scroll toggle; accepts `height` prop for resizable panel
+- **Status bar** — Simplified to version display only (removed duplicate log button since sidebar has log icon)
+- **OpenCode config format** — Fixed path from `config.json` to `opencode.json`; uses `provider.anthropic.options.baseURL` format (was incorrectly using Claude Code's `env.ANTHROPIC_BASE_URL`)
+- **Error banner** — Auto-dismisses after 8 seconds; `withLoading` calls `fetchStatus()` in `finally` block so UI always updates after errors
+
+### Fixed
+- **Rust Send trait errors** — 5 instances of `MutexGuard` held across `.await` in telegram.rs; fixed by scoping all mutex operations in blocks that drop the guard before async calls
+- **OAuth expiry display inflation** — `reload_token` now preserves original `expires_at` when Anthropic returns the same access token (refresh endpoint returns full TTL, not remaining time)
+- **Analytics reset not clearing UI** — Added `setSummary(null)` before reload; replaced `confirm()` with 2-step button (Tauri webview `confirm()` unreliable)
+- **Token refresh failure leaves stale state** — On refresh failure: clears token cache, clears keychain entry (`security delete-generic-password`), deletes `~/.claude/.credentials.json`; stops proxy server; UI shows "claude auth login" hint
+- **`fetchStatus` not called after errors** — Moved from `try` to `finally` in `withLoading`, ensuring UI updates after proxy stop on token failure
+
+### Removed
+- `src/App.css` — Replaced by `src/index.css` (Tailwind)
+- `src/components/Dashboard.tsx` — Merged into `ProxyPanel.tsx`
+- `src/components/ClientPanel.tsx` — Merged into `ProxyPanel.tsx`
 
 ## [0.1.5] - 2026-03-06
 

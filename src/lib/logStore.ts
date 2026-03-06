@@ -1,7 +1,7 @@
 import { create } from "zustand";
 
 export type LogLevel = "info" | "warn" | "error" | "debug";
-export type LogSource = "app" | "fe" | "be" | "proxy" | "tunnel" | "telegram";
+export type LogSource = "app" | "fe" | "be" | "proxy" | "tunnel" | "telegram" | "provider";
 
 export interface LogEntry {
   id: number;

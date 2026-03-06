@@ -1,7 +1,18 @@
 import { useEffect, useState } from "react";
 import { api, AnalyticsSummary, RequestRecord } from "../lib/invoke";
+import SegmentedControl from "./ui/SegmentedControl";
+import Card from "./ui/Card";
+import Button from "./ui/Button";
 
 type Period = "hour" | "day" | "week" | "month" | "all";
+
+const PERIOD_OPTIONS: { value: Period; label: string }[] = [
+  { value: "hour", label: "Hour" },
+  { value: "day", label: "Day" },
+  { value: "week", label: "Week" },
+  { value: "month", label: "Month" },
+  { value: "all", label: "All" },
+];
 
 function formatCost(cost: number) {
   if (cost === 0) return "$0.00";
@@ -19,32 +30,52 @@ function formatTime(ts: number) {
   return new Date(ts).toLocaleString();
 }
 
+const SOURCE_COLORS: Record<string, string> = {
+  claude_code: "text-text-green bg-text-green/10 border-text-green/20",
+  api_key: "text-text-amber bg-text-amber/10 border-text-amber/20",
+  error: "text-text-red bg-text-red/10 border-text-red/20",
+};
+
+const SOURCE_LABELS: Record<string, string> = {
+  claude_code: "Claude Code",
+  api_key: "API Key",
+  error: "Error",
+};
+
 function SourceBadge({ source }: { source: RequestRecord["source"] }) {
-  const colors: Record<string, string> = {
-    claude_code: "#22c55e",
-    api_key: "#f59e0b",
-    error: "#ef4444",
-  };
-  const labels: Record<string, string> = {
-    claude_code: "Claude Code",
-    api_key: "API Key",
-    error: "Error",
-  };
   return (
     <span
-      style={{
-        display: "inline-block",
-        padding: "2px 8px",
-        borderRadius: 4,
-        fontSize: 11,
-        fontWeight: 600,
-        backgroundColor: colors[source] + "22",
-        color: colors[source],
-        border: `1px solid ${colors[source]}44`,
-      }}
+      className={`inline-block px-2 py-0.5 rounded text-[10px] font-semibold border ${SOURCE_COLORS[source]}`}
     >
-      {labels[source]}
+      {SOURCE_LABELS[source]}
     </span>
+  );
+}
+
+interface StatCardProps {
+  value: string | number;
+  label: string;
+  accent?: "green" | "amber" | "red";
+}
+
+function StatCard({ value, label, accent }: StatCardProps) {
+  const borderColors = {
+    green: "border-l-text-green",
+    amber: "border-l-text-amber",
+    red: "border-l-text-red",
+  };
+
+  return (
+    <div
+      className={`bg-bg-card border border-border rounded-lg p-3 border-l-[3px] ${
+        accent ? borderColors[accent] : "border-l-border"
+      }`}
+    >
+      <div className="text-[18px] font-bold text-text-primary font-mono">
+        {value}
+      </div>
+      <div className="text-[11px] text-text-muted mt-0.5">{label}</div>
+    </div>
   );
 }
 
@@ -55,6 +86,7 @@ export default function AnalyticsPanel() {
   const [period, setPeriod] = useState<Period>("day");
   const [loading, setLoading] = useState(false);
   const [resetting, setResetting] = useState(false);
+  const [confirmReset, setConfirmReset] = useState(false);
   const [page, setPage] = useState(0);
 
   const load = async (p: Period) => {
@@ -73,150 +105,199 @@ export default function AnalyticsPanel() {
   }, [period]);
 
   const handleReset = async () => {
-    if (!confirm("Reset all analytics data? This cannot be undone.")) return;
     setResetting(true);
-    await api.resetAnalytics();
-    await load(period);
-    setResetting(false);
+    try {
+      await api.resetAnalytics();
+      setSummary(null);
+      await load(period);
+    } finally {
+      setResetting(false);
+      setConfirmReset(false);
+    }
   };
 
   return (
-    <div className="analytics">
-      {/* Period selector */}
-      <div className="period-row">
-        <div className="period-tabs">
-          {(["hour", "day", "week", "month", "all"] as Period[]).map((p) => (
-            <button
-              key={p}
-              className={`tab-btn ${period === p ? "active" : ""}`}
-              onClick={() => setPeriod(p)}
-            >
-              {p === "all" ? "All time" : `Last ${p}`}
-            </button>
-          ))}
-        </div>
-        <button
-          className="btn btn-danger"
-          onClick={handleReset}
-          disabled={resetting}
-        >
-          {resetting ? "..." : "Reset"}
-        </button>
+    <div className="p-5 space-y-4 max-w-3xl mx-auto">
+      {/* Header */}
+      <div className="flex items-center justify-between">
+        <SegmentedControl
+          options={PERIOD_OPTIONS}
+          value={period}
+          onChange={setPeriod}
+          size="sm"
+        />
+        {confirmReset ? (
+          <div className="flex items-center gap-2">
+            <span className="text-[11px] text-text-muted">Are you sure?</span>
+            <Button variant="danger" size="sm" loading={resetting} onClick={handleReset}>
+              Confirm
+            </Button>
+            <Button size="sm" onClick={() => setConfirmReset(false)}>
+              Cancel
+            </Button>
+          </div>
+        ) : (
+          <Button variant="danger" size="sm" onClick={() => setConfirmReset(true)}>
+            Reset
+          </Button>
+        )}
       </div>
 
       {loading || !summary ? (
-        <div className="loading">Loading...</div>
+        <div className="flex items-center justify-center h-40 text-text-muted text-sm">
+          Loading...
+        </div>
       ) : (
         <>
-          {/* Summary cards */}
-          <div className="stats-grid">
-            <div className="stat-card">
-              <div className="stat-value">{summary.total_requests}</div>
-              <div className="stat-label">Total Requests</div>
-            </div>
-            <div className="stat-card green">
-              <div className="stat-value">{summary.claude_code_requests}</div>
-              <div className="stat-label">Claude Code</div>
-            </div>
-            <div className="stat-card amber">
-              <div className="stat-value">{summary.api_key_requests}</div>
-              <div className="stat-label">API Key (Paid)</div>
-            </div>
-            <div className="stat-card red">
-              <div className="stat-value">{summary.error_requests}</div>
-              <div className="stat-label">Errors</div>
-            </div>
-            <div className="stat-card">
-              <div className="stat-value">{formatTokens(summary.total_input_tokens)}</div>
-              <div className="stat-label">Input Tokens</div>
-            </div>
-            <div className="stat-card">
-              <div className="stat-value">{formatTokens(summary.total_output_tokens)}</div>
-              <div className="stat-label">Output Tokens</div>
-            </div>
-            <div className="stat-card red">
-              <div className="stat-value">{formatCost(summary.total_cost)}</div>
-              <div className="stat-label">Paid Cost</div>
-            </div>
-            <div className="stat-card green">
-              <div className="stat-value">{formatCost(summary.estimated_savings)}</div>
-              <div className="stat-label">Estimated Savings</div>
-            </div>
+          {/* Stats grid — 2 rows of 4 */}
+          <div className="grid grid-cols-4 gap-3">
+            <StatCard value={summary.total_requests} label="Total Requests" />
+            <StatCard
+              value={summary.claude_code_requests}
+              label="Claude Code"
+              accent="green"
+            />
+            <StatCard
+              value={summary.api_key_requests}
+              label="API Key (Paid)"
+              accent="amber"
+            />
+            <StatCard
+              value={summary.error_requests}
+              label="Errors"
+              accent="red"
+            />
+            <StatCard
+              value={formatTokens(summary.total_input_tokens)}
+              label="Input Tokens"
+            />
+            <StatCard
+              value={formatTokens(summary.total_output_tokens)}
+              label="Output Tokens"
+            />
+            <StatCard
+              value={formatCost(summary.total_cost)}
+              label="Paid Cost"
+              accent="red"
+            />
+            <StatCard
+              value={formatCost(summary.estimated_savings)}
+              label="Estimated Savings"
+              accent="green"
+            />
           </div>
 
-          {/* Requests table */}
-          <div className="card" style={{ marginTop: 16 }}>
-            <div className="card-title" style={{ marginBottom: 12 }}>
-              Recent Requests ({summary.requests.length})
+          {/* Request table */}
+          <Card>
+            <div className="flex items-center justify-between mb-3">
+              <span className="text-[13px] font-semibold text-text-primary">
+                Recent Requests ({summary.requests.length})
+              </span>
             </div>
+
             {summary.requests.length === 0 ? (
-              <div className="empty-state">No requests yet. Start the proxy and make some API calls.</div>
-            ) : (() => {
-                const totalPages = Math.ceil(summary.requests.length / PAGE_SIZE);
-                const pageItems = summary.requests.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE);
-                return (
-                  <>
-                    <div className="table-wrapper">
-                      <table className="requests-table">
-                        <thead>
-                          <tr>
-                            <th>Time</th>
-                            <th>Model</th>
-                            <th>Source</th>
-                            <th>In</th>
-                            <th>Out</th>
-                            <th>Cost</th>
-                            <th>Latency</th>
+              <div className="text-center py-8 text-text-muted text-sm">
+                No requests yet. Start the proxy and make some API calls.
+              </div>
+            ) : (
+              <>
+                <div className="overflow-x-auto">
+                  <table className="w-full text-[12px]">
+                    <thead>
+                      <tr className="border-b border-border text-left">
+                        <th className="py-2 px-2 text-text-muted font-medium sticky top-0 bg-bg-card">
+                          Time
+                        </th>
+                        <th className="py-2 px-2 text-text-muted font-medium sticky top-0 bg-bg-card">
+                          Model
+                        </th>
+                        <th className="py-2 px-2 text-text-muted font-medium sticky top-0 bg-bg-card">
+                          Source
+                        </th>
+                        <th className="py-2 px-2 text-text-muted font-medium sticky top-0 bg-bg-card">
+                          In
+                        </th>
+                        <th className="py-2 px-2 text-text-muted font-medium sticky top-0 bg-bg-card">
+                          Out
+                        </th>
+                        <th className="py-2 px-2 text-text-muted font-medium sticky top-0 bg-bg-card">
+                          Cost
+                        </th>
+                        <th className="py-2 px-2 text-text-muted font-medium sticky top-0 bg-bg-card">
+                          Latency
+                        </th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {summary.requests
+                        .slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE)
+                        .map((req) => (
+                          <tr
+                            key={req.id}
+                            className={`border-b border-border/30 hover:bg-bg-hover/30 ${
+                              req.source === "error" ? "bg-text-red/5" : ""
+                            }`}
+                          >
+                            <td className="py-1.5 px-2 font-mono text-[11px] text-text-muted whitespace-nowrap">
+                              {formatTime(req.timestamp)}
+                            </td>
+                            <td className="py-1.5 px-2 font-mono text-[11px] max-w-[140px] truncate">
+                              {req.model}
+                            </td>
+                            <td className="py-1.5 px-2">
+                              <SourceBadge source={req.source} />
+                            </td>
+                            <td className="py-1.5 px-2 font-mono">
+                              {formatTokens(req.input_tokens)}
+                            </td>
+                            <td className="py-1.5 px-2 font-mono">
+                              {formatTokens(req.output_tokens)}
+                            </td>
+                            <td className="py-1.5 px-2 font-mono">
+                              {formatCost(req.estimated_cost)}
+                            </td>
+                            <td className="py-1.5 px-2 font-mono">
+                              {req.latency_ms != null
+                                ? `${req.latency_ms}ms`
+                                : "\u2014"}
+                            </td>
                           </tr>
-                        </thead>
-                        <tbody>
-                          {pageItems.map((req) => (
-                            <tr key={req.id} className={req.source === "error" ? "row-error" : ""}>
-                              <td className="mono" style={{ fontSize: 11 }}>
-                                {formatTime(req.timestamp)}
-                              </td>
-                              <td className="mono" style={{ fontSize: 11, maxWidth: 160, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                                {req.model}
-                              </td>
-                              <td>
-                                <SourceBadge source={req.source} />
-                              </td>
-                              <td className="mono">{formatTokens(req.input_tokens)}</td>
-                              <td className="mono">{formatTokens(req.output_tokens)}</td>
-                              <td className="mono">{formatCost(req.estimated_cost)}</td>
-                              <td className="mono">
-                                {req.latency_ms != null ? `${req.latency_ms}ms` : "—"}
-                              </td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
+                        ))}
+                    </tbody>
+                  </table>
+                </div>
+
+                {/* Pagination */}
+                {(() => {
+                  const totalPages = Math.ceil(
+                    summary.requests.length / PAGE_SIZE
+                  );
+                  if (totalPages <= 1) return null;
+                  return (
+                    <div className="flex items-center justify-between pt-3">
+                      <Button
+                        size="sm"
+                        onClick={() => setPage((p) => p - 1)}
+                        disabled={page === 0}
+                      >
+                        Prev
+                      </Button>
+                      <span className="text-[11px] text-text-muted">
+                        Page {page + 1} of {totalPages}
+                      </span>
+                      <Button
+                        size="sm"
+                        onClick={() => setPage((p) => p + 1)}
+                        disabled={page >= totalPages - 1}
+                      >
+                        Next
+                      </Button>
                     </div>
-                    {totalPages > 1 && (
-                      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "10px 0 2px" }}>
-                        <button
-                          className="btn btn-small btn-secondary"
-                          onClick={() => setPage((p) => p - 1)}
-                          disabled={page === 0}
-                        >
-                          ← Prev
-                        </button>
-                        <span style={{ fontSize: 12, color: "var(--text-muted, #888)" }}>
-                          Page {page + 1} / {totalPages} · {summary.requests.length} total
-                        </span>
-                        <button
-                          className="btn btn-small btn-secondary"
-                          onClick={() => setPage((p) => p + 1)}
-                          disabled={page >= totalPages - 1}
-                        >
-                          Next →
-                        </button>
-                      </div>
-                    )}
-                  </>
-                );
-              })()}
-          </div>
+                  );
+                })()}
+              </>
+            )}
+          </Card>
         </>
       )}
     </div>

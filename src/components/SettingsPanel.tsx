@@ -1,22 +1,27 @@
 import { useEffect, useState } from "react";
 import { api, ProxyConfig, BudgetSettings, TelegramConfig } from "../lib/invoke";
+import Card, { CardTitle } from "./ui/Card";
+import Button from "./ui/Button";
+import Input, { TextArea } from "./ui/Input";
+import { toast } from "./ui/Toast";
 
 export default function SettingsPanel() {
   const [config, setConfig] = useState<ProxyConfig | null>(null);
   const [budget, setBudget] = useState<BudgetSettings | null>(null);
   const [telegram, setTelegram] = useState<TelegramConfig | null>(null);
   const [saving, setSaving] = useState(false);
-  const [saved, setSaved] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    Promise.all([api.getSettings(), api.getBudget(), api.getTelegramConfig()]).then(
-      ([cfg, bud, tg]) => {
-        setConfig(cfg);
-        setBudget(bud);
-        setTelegram(tg);
-      }
-    );
+    Promise.all([
+      api.getSettings(),
+      api.getBudget(),
+      api.getTelegramConfig(),
+    ]).then(([cfg, bud, tg]) => {
+      setConfig(cfg);
+      setBudget(bud);
+      setTelegram(tg);
+    });
   }, []);
 
   const handleSave = async () => {
@@ -27,8 +32,7 @@ export default function SettingsPanel() {
       await api.saveSettings(config);
       await api.saveBudget(budget);
       await api.saveTelegramConfig(telegram);
-      setSaved(true);
-      setTimeout(() => setSaved(false), 2000);
+      toast.success("Settings saved");
     } catch (e) {
       setError(String(e));
     } finally {
@@ -36,98 +40,143 @@ export default function SettingsPanel() {
     }
   };
 
-  if (!config || !budget || !telegram) return <div className="loading">Loading...</div>;
+  if (!config || !budget || !telegram) {
+    return (
+      <div className="flex items-center justify-center h-full text-text-muted text-sm">
+        Loading...
+      </div>
+    );
+  }
 
   return (
-    <div className="settings">
-      {error && <div className="error-banner">{error}</div>}
+    <div className="p-5 space-y-4 max-w-2xl mx-auto pb-20">
+      {error && (
+        <div className="bg-text-red/10 border border-text-red/30 text-text-red text-[12px] px-3 py-2 rounded-md">
+          {error}
+        </div>
+      )}
 
-      <div className="card">
-        <div className="card-title">Proxy Server</div>
-        <div className="form-group">
-          <label>Port</label>
-          <input
+      {/* Proxy Server */}
+      <Card>
+        <CardTitle>Proxy Server</CardTitle>
+        <div className="space-y-4 mt-3">
+          <Input
+            label="Port"
             type="number"
             value={config.port}
-            onChange={(e) => setConfig({ ...config, port: parseInt(e.target.value) || 8082 })}
+            onChange={(e) =>
+              setConfig({
+                ...config,
+                port: parseInt(e.target.value) || 8082,
+              })
+            }
             min={1024}
             max={65535}
+            hint="Port for the local proxy server (default: 8082)"
           />
-          <span className="hint">Port for the local proxy server (default: 8082)</span>
-        </div>
 
-        <div className="form-group">
-          <label className="checkbox-label">
+          <label className="flex items-center gap-2 text-[13px] text-text-primary cursor-pointer">
             <input
               type="checkbox"
               checked={config.claude_code_first}
-              onChange={(e) => setConfig({ ...config, claude_code_first: e.target.checked })}
+              onChange={(e) =>
+                setConfig({ ...config, claude_code_first: e.target.checked })
+              }
+              className="w-3.5 h-3.5 rounded border-border accent-accent"
             />
             Use Claude Code subscription first
           </label>
-          <span className="hint">Try OAuth subscription before falling back to API key</span>
-        </div>
+          <p className="text-[11px] text-text-muted -mt-2 ml-5">
+            Try OAuth subscription before falling back to API key
+          </p>
 
-        <div className="form-group">
-          <label className="checkbox-label">
+          <label className="flex items-center gap-2 text-[13px] text-text-primary cursor-pointer">
             <input
               type="checkbox"
               checked={config.strip_unsupported_fields}
-              onChange={(e) => setConfig({ ...config, strip_unsupported_fields: e.target.checked })}
+              onChange={(e) =>
+                setConfig({
+                  ...config,
+                  strip_unsupported_fields: e.target.checked,
+                })
+              }
+              className="w-3.5 h-3.5 rounded border-border accent-accent"
             />
             Strip unsupported fields
           </label>
-          <span className="hint">
-            Enable if you see <em>"No API key available and Claude Code OAuth failed"</em> errors when using the proxy locally
-          </span>
+          <p className="text-[11px] text-text-muted -mt-2 ml-5">
+            Enable if you see "No API key available and Claude Code OAuth failed"
+            errors
+          </p>
         </div>
-      </div>
+      </Card>
 
-      <div className="card">
-        <div className="card-title">API Keys (Fallback)</div>
-        <div className="form-group">
-          <label>Anthropic API Key</label>
-          <input
+      {/* API Keys */}
+      <Card>
+        <CardTitle>API Keys (Fallback)</CardTitle>
+        <div className="space-y-4 mt-3">
+          <Input
+            label="Anthropic API Key"
             type="password"
             value={config.anthropic_api_key ?? ""}
             placeholder="sk-ant-api..."
             onChange={(e) =>
-              setConfig({ ...config, anthropic_api_key: e.target.value || null })
+              setConfig({
+                ...config,
+                anthropic_api_key: e.target.value || null,
+              })
+            }
+            hint="Used as fallback when Claude Code OAuth is rate-limited"
+          />
+          <Input
+            label="OpenAI Base URL"
+            value={config.openai_base_url}
+            onChange={(e) =>
+              setConfig({ ...config, openai_base_url: e.target.value })
             }
           />
-          <span className="hint">Used as fallback when Claude Code OAuth is rate-limited</span>
-        </div>
-
-        <div className="form-group">
-          <label>OpenAI Base URL</label>
-          <input
-            type="text"
-            value={config.openai_base_url}
-            onChange={(e) => setConfig({ ...config, openai_base_url: e.target.value })}
-          />
-        </div>
-
-        <div className="form-group">
-          <label>OpenAI API Key</label>
-          <input
+          <Input
+            label="OpenAI API Key"
             type="password"
             value={config.openai_api_key ?? ""}
             placeholder="sk-..."
             onChange={(e) =>
-              setConfig({ ...config, openai_api_key: e.target.value || null })
+              setConfig({
+                ...config,
+                openai_api_key: e.target.value || null,
+              })
+            }
+            hint="For non-Claude model passthrough (GPT, Gemini, etc.)"
+          />
+        </div>
+      </Card>
+
+      {/* Security */}
+      <Card>
+        <CardTitle>Security</CardTitle>
+        <div className="space-y-4 mt-3">
+          <Input
+            label="Hub Secret"
+            type="password"
+            value={config.hub_secret ?? ""}
+            placeholder="Leave empty for no auth"
+            onChange={(e) =>
+              setConfig({
+                ...config,
+                hub_secret: e.target.value || null,
+              })
+            }
+            hint={
+              <>
+                Shared secret for hub provider API. Leave empty to allow
+                unauthenticated access.
+              </>
             }
           />
-          <span className="hint">For non-Claude model passthrough (GPT, Gemini, etc.)</span>
-        </div>
-      </div>
-
-      <div className="card">
-        <div className="card-title">Access Control</div>
-        <div className="form-group">
-          <label>Allowed IPs (Cloudflare Tunnel)</label>
-          <textarea
+          <TextArea
+            label="Allowed IPs (Cloudflare Tunnel)"
             value={config.allowed_ips.join("\n")}
-            rows={4}
+            rows={3}
             onChange={(e) =>
               setConfig({
                 ...config,
@@ -137,122 +186,135 @@ export default function SettingsPanel() {
                   .filter(Boolean),
               })
             }
+            hint={
+              <>
+                One IP per line. <code>0.0.0.0</code> or <code>*</code> or empty
+                = allow all. Only enforced for tunnel requests.
+              </>
+            }
           />
-          <span className="hint">
-            One IP per line. <code>0.0.0.0</code> or <code>*</code> or empty = allow all.
-            Only enforced for tunnel requests (Cloudflare). Local requests always allowed.
-          </span>
         </div>
-      </div>
+      </Card>
 
-      <div className="card">
-        <div className="card-title">Spending Limits (API Key Fallback)</div>
-        <div className="form-group">
-          <div className="form-row">
-            <div>
-              <label>Hourly ($)</label>
+      {/* Budget Limits */}
+      <Card>
+        <CardTitle>Budget Limits</CardTitle>
+        <div className="grid grid-cols-2 gap-3 mt-3">
+          <Input
+            label="Hourly ($)"
+            type="number"
+            value={budget.budget_hourly ?? ""}
+            placeholder="No limit"
+            min={0}
+            step={0.01}
+            onChange={(e) =>
+              setBudget({
+                ...budget,
+                budget_hourly: e.target.value
+                  ? parseFloat(e.target.value)
+                  : null,
+              })
+            }
+          />
+          <Input
+            label="Daily ($)"
+            type="number"
+            value={budget.budget_daily ?? ""}
+            placeholder="No limit"
+            min={0}
+            step={0.01}
+            onChange={(e) =>
+              setBudget({
+                ...budget,
+                budget_daily: e.target.value
+                  ? parseFloat(e.target.value)
+                  : null,
+              })
+            }
+          />
+          <Input
+            label="Weekly ($)"
+            type="number"
+            value={budget.budget_weekly ?? ""}
+            placeholder="No limit"
+            min={0}
+            step={0.01}
+            onChange={(e) =>
+              setBudget({
+                ...budget,
+                budget_weekly: e.target.value
+                  ? parseFloat(e.target.value)
+                  : null,
+              })
+            }
+          />
+          <Input
+            label="Monthly ($)"
+            type="number"
+            value={budget.budget_monthly ?? ""}
+            placeholder="No limit"
+            min={0}
+            step={0.01}
+            onChange={(e) =>
+              setBudget({
+                ...budget,
+                budget_monthly: e.target.value
+                  ? parseFloat(e.target.value)
+                  : null,
+              })
+            }
+          />
+        </div>
+        <p className="text-[11px] text-text-muted mt-2">
+          Limits only apply to paid API key requests. Claude Code usage is free.
+        </p>
+      </Card>
+
+      {/* Integrations: Telegram */}
+      <Card>
+        <div className="flex items-center justify-between mb-3">
+          <CardTitle>Integrations</CardTitle>
+        </div>
+
+        {/* Telegram section */}
+        <div className="space-y-4">
+          <div className="flex items-center justify-between">
+            <span className="text-[12px] font-semibold text-text-secondary uppercase tracking-wider">
+              Telegram Bot
+            </span>
+            <label className="flex items-center gap-2 text-[12px] text-text-primary cursor-pointer">
               <input
-                type="number"
-                value={budget.budget_hourly ?? ""}
-                placeholder="No limit"
-                min={0}
-                step={0.01}
+                type="checkbox"
+                checked={telegram.enabled}
                 onChange={(e) =>
-                  setBudget({
-                    ...budget,
-                    budget_hourly: e.target.value ? parseFloat(e.target.value) : null,
-                  })
+                  setTelegram({ ...telegram, enabled: e.target.checked })
                 }
+                className="w-3.5 h-3.5 rounded border-border accent-accent"
               />
-            </div>
-            <div>
-              <label>Daily ($)</label>
-              <input
-                type="number"
-                value={budget.budget_daily ?? ""}
-                placeholder="No limit"
-                min={0}
-                step={0.01}
-                onChange={(e) =>
-                  setBudget({
-                    ...budget,
-                    budget_daily: e.target.value ? parseFloat(e.target.value) : null,
-                  })
-                }
-              />
-            </div>
-            <div>
-              <label>Weekly ($)</label>
-              <input
-                type="number"
-                value={budget.budget_weekly ?? ""}
-                placeholder="No limit"
-                min={0}
-                step={0.01}
-                onChange={(e) =>
-                  setBudget({
-                    ...budget,
-                    budget_weekly: e.target.value ? parseFloat(e.target.value) : null,
-                  })
-                }
-              />
-            </div>
-            <div>
-              <label>Monthly ($)</label>
-              <input
-                type="number"
-                value={budget.budget_monthly ?? ""}
-                placeholder="No limit"
-                min={0}
-                step={0.01}
-                onChange={(e) =>
-                  setBudget({
-                    ...budget,
-                    budget_monthly: e.target.value ? parseFloat(e.target.value) : null,
-                  })
-                }
-              />
-            </div>
+              Enabled
+            </label>
           </div>
-          <span className="hint">Limits only apply to paid API key requests. Claude Code usage is free.</span>
-        </div>
-      </div>
 
-      {/* Telegram Bot */}
-      <div className="card">
-        <div className="card-title">Telegram Bot</div>
-        <div className="form-group">
-          <label className="checkbox-label">
-            <input
-              type="checkbox"
-              checked={telegram.enabled}
-              onChange={(e) => setTelegram({ ...telegram, enabled: e.target.checked })}
-            />
-            Enable Telegram bot
-          </label>
-          <span className="hint">
-            Lets authorized users check status and get tokens via Telegram
-          </span>
-        </div>
-
-        <div className="form-group">
-          <label>Bot Token</label>
-          <input
+          <Input
+            label="Bot Token"
             type="password"
             value={telegram.bot_token ?? ""}
             placeholder="1234567890:ABCdef..."
             onChange={(e) =>
-              setTelegram({ ...telegram, bot_token: e.target.value || null })
+              setTelegram({
+                ...telegram,
+                bot_token: e.target.value || null,
+              })
+            }
+            hint={
+              <>
+                Get a token from <code>@BotFather</code> on Telegram.
+              </>
             }
           />
-          <span className="hint">
-            Get a token from <code>@BotFather</code> on Telegram. Keep it secret.
-          </span>
-        </div>
 
-        <div className="form-group">
-          <label>Allowed Telegram User IDs</label>
-          <textarea
+          <TextArea
+            label="Allowed User IDs"
             value={telegram.allowed_user_ids.join("\n")}
             rows={3}
             placeholder={"123456789\n987654321"}
@@ -265,28 +327,43 @@ export default function SettingsPanel() {
                   .filter((n) => !isNaN(n) && n > 0),
               })
             }
+            hint={
+              <>
+                One user ID per line. Find yours via{" "}
+                <code>@userinfobot</code>. Empty = allow all (not
+                recommended).
+              </>
+            }
           />
-          <span className="hint">
-            One Telegram user ID per line. Leave empty to allow everyone (not recommended).
-            Find your ID by messaging <code>@userinfobot</code>.
-          </span>
-        </div>
 
-        <div className="form-group">
-          <label>Bot Commands</label>
-          <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-            {["/status", "/token", "/url", "/refresh", "/help"].map((cmd) => (
-              <code key={cmd} style={{ fontSize: 12, padding: "2px 8px", borderRadius: 5, background: "var(--bg)", border: "1px solid var(--border)" }}>{cmd}</code>
-            ))}
+          <div className="space-y-1">
+            <span className="text-[12px] font-medium text-text-secondary">
+              Commands
+            </span>
+            <div className="flex flex-wrap gap-1.5">
+              {["/status", "/start", "/stop", "/tunnel", "/pool", "/usage", "/help"].map(
+                (cmd) => (
+                  <code
+                    key={cmd}
+                    className="text-[11px] px-2 py-0.5 rounded bg-bg-elevated border border-border text-text-muted"
+                  >
+                    {cmd}
+                  </code>
+                )
+              )}
+            </div>
           </div>
         </div>
-      </div>
+      </Card>
 
-      <div className="save-row">
-        <button className="btn btn-primary" style={{ minWidth: 120 }} onClick={handleSave} disabled={saving}>
-          {saving ? "Saving..." : saved ? "Saved!" : "Save Settings"}
-        </button>
-        <span className="hint" style={{ marginTop: 0 }}>Restart the proxy after changing port.</span>
+      {/* Sticky save button */}
+      <div className="fixed bottom-[26px] left-[48px] right-0 bg-bg/90 backdrop-blur-sm border-t border-border px-5 py-3 flex items-center gap-3">
+        <Button variant="primary" loading={saving} onClick={handleSave}>
+          Save Settings
+        </Button>
+        <span className="text-[11px] text-text-muted">
+          Restart the proxy after changing port.
+        </span>
       </div>
     </div>
   );

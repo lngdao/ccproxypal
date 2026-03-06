@@ -4,7 +4,7 @@ use tauri::{AppHandle, Emitter, Manager, State};
 use crate::db::{self, AnalyticsSummary, BudgetSettings};
 use crate::oauth::get_valid_token;
 use crate::proxy::server::{build_router, ServerState};
-use crate::state::{AppState, ProxyConfig, ProxyServerHandle, TelegramConfig, TokenInfo};
+use crate::state::{AppState, ProxyConfig, ProxyServerHandle, TelegramConfig};
 use crate::telegram::{run_bot, BotContext};
 use crate::tunnel;
 
@@ -26,6 +26,42 @@ pub fn emit_log(app: &AppHandle, level: &str, source: &str, message: &str) {
     let _ = app.emit("app-log", event);
 }
 
+/// Send a Telegram push notification if the bot is configured and enabled.
+pub fn notify_telegram(app: &AppHandle, message: &str) {
+    let state = app.state::<crate::state::AppState>();
+    let cfg = state.telegram_config.lock().unwrap().clone();
+    let is_running = state.telegram_handle.lock().unwrap().is_some();
+
+    if !cfg.enabled || !is_running {
+        return;
+    }
+
+    if let Some(ref token) = cfg.bot_token {
+        let token = token.clone();
+        let users = cfg.allowed_user_ids.clone();
+        let msg = message.to_string();
+        tokio::spawn(async move {
+            crate::telegram::send_notification(&token, &users, &msg).await;
+        });
+    }
+}
+
+/// Send a native OS notification via Tauri's notification plugin.
+pub fn notify_os(app: &AppHandle, title: &str, body: &str) {
+    use tauri_plugin_notification::NotificationExt;
+    let _ = app.notification()
+        .builder()
+        .title(title)
+        .body(body)
+        .show();
+}
+
+/// Send both Telegram and OS notifications.
+pub fn notify_all(app: &AppHandle, title: &str, body: &str) {
+    notify_os(app, title, body);
+    notify_telegram(app, &format!("🔔 <b>{}</b>\n{}", title, body));
+}
+
 // ─── Status ──────────────────────────────────────────────────────────────────
 
 #[derive(serde::Serialize)]
@@ -37,6 +73,8 @@ pub struct AppStatus {
     pub tunnel_running: bool,
     pub tunnel_url: Option<String>,
     pub telegram_running: bool,
+    pub provider_running: bool,
+    pub provider_hub_url: Option<String>,
 }
 
 #[tauri::command]
@@ -56,6 +94,8 @@ pub async fn get_status(state: State<'_, AppState>) -> Result<AppStatus, String>
     let tunnel_running = state.tunnel_process.lock().unwrap().is_some();
     let tunnel_url = state.tunnel_url.lock().unwrap().clone();
     let telegram_running = state.telegram_handle.lock().unwrap().is_some();
+    let provider_running = state.provider_handle.lock().unwrap().is_some();
+    let provider_hub_url = state.provider_hub_url.lock().unwrap().clone();
 
     Ok(AppStatus {
         proxy_running,
@@ -65,6 +105,8 @@ pub async fn get_status(state: State<'_, AppState>) -> Result<AppStatus, String>
         tunnel_running,
         tunnel_url,
         telegram_running,
+        provider_running,
+        provider_hub_url,
     })
 }
 
@@ -116,6 +158,71 @@ pub async fn load_token(
     refresh_token(app, state).await
 }
 
+/// Force refresh the OAuth access token by calling Anthropic's token endpoint.
+/// Gets a fresh access_token using the current refresh_token.
+#[tauri::command]
+pub async fn reload_token(
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<TokenStatus, String> {
+    emit_log(&app, "info", "app", "Force-refreshing OAuth token via API...");
+
+    // Get current cached token (for comparison after refresh)
+    let cached = { state.token_cache.lock().unwrap().clone() };
+    let refresh_tok = match &cached {
+        Some(t) => t.refresh_token.clone(),
+        None => {
+            emit_log(&app, "info", "app", "No cached token, loading refresh_token from disk...");
+            match crate::oauth::load_credentials().await {
+                Ok(t) => t.refresh_token,
+                Err(e) => {
+                    let msg = format!("No token available: {}", e);
+                    emit_log(&app, "error", "app", &msg);
+                    return Ok(TokenStatus { valid: false, expires_at: None, error: Some(msg) });
+                }
+            }
+        }
+    };
+
+    match crate::oauth::refresh_token(&refresh_tok).await {
+        Ok(new_token) => {
+            // If Anthropic returned the same access token, keep the original expires_at
+            // (the endpoint returns full TTL which would inflate the displayed time)
+            let final_token = if cached.as_ref().is_some_and(|c| c.access_token == new_token.access_token) {
+                let original_expires = cached.as_ref().unwrap().expires_at;
+                emit_log(&app, "info", "app", "Token unchanged after refresh, keeping original expiry");
+                crate::state::TokenInfo {
+                    expires_at: original_expires,
+                    ..new_token
+                }
+            } else {
+                emit_log(&app, "info", "app", "Got new access token from refresh");
+                new_token
+            };
+            let expires_at = final_token.expires_at;
+            *state.token_cache.lock().unwrap() = Some(final_token);
+            Ok(TokenStatus {
+                valid: true,
+                expires_at: Some(expires_at),
+                error: None,
+            })
+        }
+        Err(e) => {
+            let msg = e.to_string();
+            emit_log(&app, "error", "app", &format!("Token refresh failed: {}", msg));
+            // Clear cached token — refresh token is invalid, access token can't be trusted
+            *state.token_cache.lock().unwrap() = None;
+            // Also clear stale credentials from keychain and file
+            crate::oauth::clear_credentials().await;
+            Ok(TokenStatus {
+                valid: false,
+                expires_at: None,
+                error: Some(msg),
+            })
+        }
+    }
+}
+
 #[derive(serde::Serialize)]
 pub struct TokenDetails {
     pub access_token: Option<String>,
@@ -165,6 +272,7 @@ pub async fn start_proxy(
     let server_state = ServerState {
         config: Arc::new(config),
         token_cache: state.token_cache.clone(),
+        token_pool: state.token_pool.clone(),
         db_path,
         app: app.clone(),
     };
@@ -435,6 +543,7 @@ pub async fn start_telegram_bot(
         },
         proxy_port: port,
         proxy_running,
+        app_handle: Some(app.clone()),
     };
 
     let tunnel_url_shared = ctx.tunnel_url.clone();
@@ -532,7 +641,7 @@ async fn check_tool_configured(tool: &str, proxy_url: &str) -> bool {
     };
     let path = match tool {
         "claude_code" => home.join(".claude").join("settings.json"),
-        "opencode" => home.join(".config").join("opencode").join("config.json"),
+        "opencode" => home.join(".config").join("opencode").join("opencode.json"),
         _ => return false,
     };
     if !path.exists() {
@@ -542,6 +651,15 @@ async fn check_tool_configured(tool: &str, proxy_url: &str) -> bool {
         Ok(c) => c,
         Err(_) => return false,
     };
+    // OpenCode stores baseURL in provider.anthropic.options.baseURL
+    if tool == "opencode" {
+        if let Ok(json) = serde_json::from_str::<serde_json::Value>(&content) {
+            if let Some(base) = json.pointer("/provider/anthropic/options/baseURL").and_then(|v| v.as_str()) {
+                return base == proxy_url;
+            }
+        }
+        return false;
+    }
     content.contains(proxy_url)
 }
 
@@ -550,11 +668,15 @@ pub async fn configure_tool(
     app: AppHandle,
     state: State<'_, AppState>,
     tool: String,
+    url: Option<String>,
 ) -> Result<String, String> {
-    let proxy_url = {
-        let tunnel = state.tunnel_url.lock().unwrap().clone();
-        let port = state.config.lock().unwrap().port;
-        tunnel.unwrap_or_else(|| format!("http://localhost:{}", port))
+    let proxy_url = match url {
+        Some(u) if !u.is_empty() => u,
+        _ => {
+            let tunnel = state.tunnel_url.lock().unwrap().clone();
+            let port = state.config.lock().unwrap().port;
+            tunnel.unwrap_or_else(|| format!("http://localhost:{}", port))
+        }
     };
 
     let home = dirs::home_dir().ok_or("Cannot find home directory")?;
@@ -565,8 +687,8 @@ pub async fn configure_tool(
             write_env_to_json(&path, &proxy_url).await
         }
         "opencode" => {
-            let path = home.join(".config").join("opencode").join("config.json");
-            write_env_to_json(&path, &proxy_url).await
+            let path = home.join(".config").join("opencode").join("opencode.json");
+            write_opencode_config(&path, &proxy_url).await
         }
         _ => Err(format!("Unknown tool: {}", tool)),
     };
@@ -584,7 +706,7 @@ pub async fn remove_tool_config(app: AppHandle, tool: String) -> Result<String, 
     let home = dirs::home_dir().ok_or("Cannot find home directory")?;
     let path = match tool.as_str() {
         "claude_code" => home.join(".claude").join("settings.json"),
-        "opencode" => home.join(".config").join("opencode").join("config.json"),
+        "opencode" => home.join(".config").join("opencode").join("opencode.json"),
         _ => return Err(format!("Unknown tool: {}", tool)),
     };
 
@@ -596,11 +718,30 @@ pub async fn remove_tool_config(app: AppHandle, tool: String) -> Result<String, 
     let mut settings: serde_json::Value =
         serde_json::from_str(&content).unwrap_or(serde_json::json!({}));
 
-    if let Some(env) = settings.get_mut("env").and_then(|e| e.as_object_mut()) {
-        env.remove("ANTHROPIC_BASE_URL");
-        env.remove("ANTHROPIC_AUTH_TOKEN");
-        if env.is_empty() {
-            settings.as_object_mut().unwrap().remove("env");
+    if tool == "opencode" {
+        // OpenCode: remove provider.anthropic.options.baseURL and apiKey
+        if let Some(opts) = settings.pointer_mut("/provider/anthropic/options").and_then(|v| v.as_object_mut()) {
+            opts.remove("baseURL");
+            opts.remove("apiKey");
+            if opts.is_empty() {
+                if let Some(anthropic) = settings.pointer_mut("/provider/anthropic").and_then(|v| v.as_object_mut()) {
+                    anthropic.remove("options");
+                    if anthropic.is_empty() {
+                        if let Some(provider) = settings.pointer_mut("/provider").and_then(|v| v.as_object_mut()) {
+                            provider.remove("anthropic");
+                        }
+                    }
+                }
+            }
+        }
+    } else {
+        // Claude Code: remove env.ANTHROPIC_BASE_URL and env.ANTHROPIC_AUTH_TOKEN
+        if let Some(env) = settings.get_mut("env").and_then(|e| e.as_object_mut()) {
+            env.remove("ANTHROPIC_BASE_URL");
+            env.remove("ANTHROPIC_AUTH_TOKEN");
+            if env.is_empty() {
+                settings.as_object_mut().unwrap().remove("env");
+            }
         }
     }
 
@@ -634,4 +775,187 @@ async fn write_env_to_json(path: &std::path::Path, proxy_url: &str) -> Result<St
         .map_err(|e| e.to_string())?;
 
     Ok(format!("Configured successfully: {}", path.display()))
+}
+
+/// Write OpenCode config using provider.anthropic.options.baseURL format.
+async fn write_opencode_config(path: &std::path::Path, proxy_url: &str) -> Result<String, String> {
+    let mut settings: serde_json::Value = if path.exists() {
+        let content = tokio::fs::read_to_string(path).await.unwrap_or_default();
+        serde_json::from_str(&content).unwrap_or(serde_json::json!({}))
+    } else {
+        serde_json::json!({"$schema": "https://opencode.ai/config.json"})
+    };
+
+    // Ensure provider.anthropic.options exists
+    if settings.get("provider").is_none() {
+        settings["provider"] = serde_json::json!({});
+    }
+    if settings["provider"].get("anthropic").is_none() {
+        settings["provider"]["anthropic"] = serde_json::json!({});
+    }
+    if settings["provider"]["anthropic"].get("options").is_none() {
+        settings["provider"]["anthropic"]["options"] = serde_json::json!({});
+    }
+
+    settings["provider"]["anthropic"]["options"]["baseURL"] =
+        serde_json::Value::String(proxy_url.to_string());
+    settings["provider"]["anthropic"]["options"]["apiKey"] =
+        serde_json::Value::String("any-dummy-key".to_string());
+
+    if let Some(parent) = path.parent() {
+        tokio::fs::create_dir_all(parent).await.map_err(|e| e.to_string())?;
+    }
+    tokio::fs::write(path, serde_json::to_string_pretty(&settings).unwrap())
+        .await
+        .map_err(|e| e.to_string())?;
+
+    Ok(format!("Configured successfully: {}", path.display()))
+}
+
+// ─── Hub / Token Pool ──────────────────────────────────────────────────────
+
+#[derive(serde::Serialize)]
+pub struct PoolEntryStatus {
+    pub provider_id: String,
+    pub healthy: bool,
+    pub expired: bool,
+    pub expires_at: i64,
+    pub provided_at: i64,
+    pub last_used: Option<i64>,
+}
+
+#[derive(serde::Serialize)]
+pub struct PoolStatus {
+    pub total: usize,
+    pub healthy: usize,
+    pub entries: Vec<PoolEntryStatus>,
+}
+
+#[tauri::command]
+pub async fn get_pool_status(state: State<'_, AppState>) -> Result<PoolStatus, String> {
+    let pool = state.token_pool.lock().unwrap();
+    let entries: Vec<PoolEntryStatus> = pool.entries.iter().map(|e| PoolEntryStatus {
+        provider_id: e.provider_id.clone(),
+        healthy: e.healthy,
+        expired: e.token.is_expired(),
+        expires_at: e.token.expires_at,
+        provided_at: e.provided_at,
+        last_used: e.last_used,
+    }).collect();
+    Ok(PoolStatus {
+        total: pool.entries.len(),
+        healthy: pool.healthy_count(),
+        entries,
+    })
+}
+
+// ─── Provider agent ─────────────────────────────────────────────────────────
+
+#[tauri::command]
+pub async fn start_provider(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    hub_url: String,
+    hub_secret: Option<String>,
+) -> Result<String, String> {
+    {
+        let handle = state.provider_handle.lock().unwrap();
+        if handle.is_some() {
+            return Ok("Provider already running".to_string());
+        }
+    }
+
+    // Must have a valid token to provide
+    let token = {
+        let lock = state.token_cache.lock().unwrap();
+        lock.clone().ok_or("No token available. Load or set a token first.")?
+    };
+
+    if token.is_expired() {
+        return Err("Token is expired. Refresh it first.".to_string());
+    }
+
+    let provider_id = gethostname::gethostname().to_string_lossy().to_string();
+    emit_log(&app, "info", "provider", &format!("Starting provider (id={}, hub={})", provider_id, hub_url));
+
+    *state.provider_hub_url.lock().unwrap() = Some(hub_url.clone());
+
+    let token_cache = state.token_cache.clone();
+    let app_clone = app.clone();
+    let hub = hub_url.clone();
+    let secret = hub_secret;
+
+    let join = tokio::spawn(async move {
+        let client = reqwest::Client::new();
+        loop {
+            // Read latest token
+            let token = {
+                let lock = token_cache.lock().unwrap();
+                lock.clone()
+            };
+
+            if let Some(t) = token {
+                let mut req = client
+                    .post(format!("{}/hub/provide", hub))
+                    .json(&serde_json::json!({
+                        "provider_id": provider_id,
+                        "access_token": t.access_token,
+                        "refresh_token": t.refresh_token,
+                        "expires_at": t.expires_at,
+                    }));
+
+                if let Some(ref s) = secret {
+                    req = req.header("Authorization", format!("Bearer {}", s));
+                }
+
+                match req.send().await {
+                    Ok(res) if res.status().is_success() => {
+                        emit_log(&app_clone, "info", "provider", "Token pushed to hub");
+                    }
+                    Ok(res) => {
+                        let status = res.status();
+                        let body = res.text().await.unwrap_or_default();
+                        emit_log(
+                            &app_clone,
+                            "error",
+                            "provider",
+                            &format!("Push failed ({}): {}", status, body),
+                        );
+                    }
+                    Err(e) => {
+                        emit_log(
+                            &app_clone,
+                            "error",
+                            "provider",
+                            &format!("Push error: {}", e),
+                        );
+                    }
+                }
+            } else {
+                emit_log(&app_clone, "warn", "provider", "No token in cache, skipping push");
+            }
+
+            tokio::time::sleep(std::time::Duration::from_secs(300)).await;
+        }
+    });
+
+    *state.provider_handle.lock().unwrap() = Some(join);
+    emit_log(&app, "info", "provider", "Provider agent started");
+    Ok("Provider started".to_string())
+}
+
+#[tauri::command]
+pub async fn stop_provider(
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<String, String> {
+    let mut handle = state.provider_handle.lock().unwrap();
+    if let Some(h) = handle.take() {
+        h.abort();
+        *state.provider_hub_url.lock().unwrap() = None;
+        emit_log(&app, "info", "provider", "Provider agent stopped");
+        Ok("Provider stopped".to_string())
+    } else {
+        Ok("Provider was not running".to_string())
+    }
 }

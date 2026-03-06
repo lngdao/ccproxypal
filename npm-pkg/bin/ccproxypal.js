@@ -4,6 +4,7 @@ import { getToken, setManualToken } from '../src/token.js';
 import { createServer } from '../src/server.js';
 import { startTunnel, isCloudflaredAvailable } from '../src/tunnel.js';
 import { configureTool, removeToolConfig, listTools } from '../src/configure.js';
+import { hostname } from 'node:os';
 
 // ─── Argument parsing ─────────────────────────────────────────────────────────
 
@@ -74,6 +75,72 @@ async function cmdServe(argv) {
   process.on('SIGTERM', shutdown);
 }
 
+// ─── Provide ───────────────────────────────────────────────────────────────
+
+async function cmdProvide(argv) {
+  let hubUrl = null;
+  let hubSecret = null;
+  let providerId = hostname();
+  let intervalSec = 300; // 5 minutes
+
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i];
+    if ((a === '--hub' || a === '-h') && argv[i + 1]) hubUrl = argv[++i];
+    else if ((a === '--secret' || a === '-s') && argv[i + 1]) hubSecret = argv[++i];
+    else if ((a === '--id') && argv[i + 1]) providerId = argv[++i];
+    else if ((a === '--interval') && argv[i + 1]) intervalSec = parseInt(argv[++i], 10);
+  }
+
+  if (!hubUrl) {
+    process.stderr.write('Error: --hub <url> is required\n');
+    process.stderr.write('Usage: ccproxypal provide --hub https://hub.example.com [--secret <secret>] [--id <name>] [--interval <seconds>]\n');
+    process.exit(1);
+  }
+
+  process.stdout.write(`Provider agent starting (id: ${providerId}, hub: ${hubUrl}, interval: ${intervalSec}s)\n`);
+
+  async function pushToken() {
+    try {
+      const token = await getToken();
+      const headers = { 'Content-Type': 'application/json' };
+      if (hubSecret) headers['Authorization'] = `Bearer ${hubSecret}`;
+
+      const res = await fetch(`${hubUrl}/hub/provide`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          provider_id: providerId,
+          access_token: token.accessToken,
+          refresh_token: token.refreshToken,
+          expires_at: token.expiresAt || (Date.now() + 55 * 60 * 1000),
+        }),
+      });
+
+      if (!res.ok) {
+        const text = await res.text().catch(() => '');
+        process.stderr.write(`Push failed (${res.status}): ${text}\n`);
+        return;
+      }
+      const data = await res.json();
+      const now = new Date().toLocaleTimeString();
+      process.stdout.write(`[${now}] Token pushed (pool: ${data.pool_size} healthy)\n`);
+    } catch (err) {
+      process.stderr.write(`Push error: ${err.message}\n`);
+    }
+  }
+
+  // Push immediately, then on interval
+  await pushToken();
+  setInterval(pushToken, intervalSec * 1000);
+
+  // Keep alive
+  process.on('SIGINT', () => {
+    process.stdout.write('\nProvider agent stopped.\n');
+    process.exit(0);
+  });
+  process.on('SIGTERM', () => process.exit(0));
+}
+
 async function cmdConfigure(argv) {
   const [sub, toolId] = argv;
 
@@ -125,6 +192,11 @@ function cmdHelp() {
       '  serve --access-token <token>   Client mode: use provided tokens',
       '         --refresh-token <token>',
       '',
+      '  provide --hub <url>            Push tokens to a hub for pool distribution',
+      '  provide --secret <secret>      Hub authentication secret',
+      '  provide --id <name>            Provider name (default: hostname)',
+      '  provide --interval <seconds>   Push interval (default: 300)',
+      '',
       '  configure                      List configurable tools',
       '  configure <tool> [--url <url>] Write proxy URL to tool config',
       '  configure <tool> --port <port> Write http://localhost:<port> to tool config',
@@ -138,6 +210,7 @@ function cmdHelp() {
       '  npx ccproxypal token',
       '  npx ccproxypal serve --tunnel',
       '  npx ccproxypal serve --access-token sk-ant-... --refresh-token ...',
+      '  npx ccproxypal provide --hub https://hub.example.com --secret mysecret',
       '  npx ccproxypal configure claude-code',
       '  npx ccproxypal configure claude-code --url https://xxxx.trycloudflare.com',
       '  npx ccproxypal configure remove claude-code',
@@ -153,6 +226,7 @@ const [, , cmd, ...rest] = process.argv;
 const dispatch = {
   token: () => cmdToken().catch(bail),
   serve: () => cmdServe(rest).catch(bail),
+  provide: () => cmdProvide(rest).catch(bail),
   configure: () => cmdConfigure(rest).catch(bail),
   help: () => cmdHelp(),
   '--help': () => cmdHelp(),

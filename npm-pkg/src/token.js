@@ -4,7 +4,7 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 
 const CLAUDE_CLIENT_ID = '9d1c250a-e61b-44d9-88ed-5944d1962f5e';
-const TOKEN_URL = 'https://console.anthropic.com/oauth/token';
+const TOKEN_URL = 'https://api.anthropic.com/v1/oauth/token';
 const EXPIRY_BUFFER_MS = 5 * 60 * 1000;
 
 let _cache = null;
@@ -52,8 +52,11 @@ function isExpired(expiresAt) {
 async function doRefresh(refreshToken) {
   const res = await fetch(TOKEN_URL, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    body: new URLSearchParams({
+    headers: {
+      'Content-Type': 'application/json',
+      'Accept': 'application/json',
+    },
+    body: JSON.stringify({
       grant_type: 'refresh_token',
       refresh_token: refreshToken,
       client_id: CLAUDE_CLIENT_ID,
@@ -61,7 +64,8 @@ async function doRefresh(refreshToken) {
   });
   if (!res.ok) {
     const text = await res.text().catch(() => '');
-    throw new Error(`Token refresh failed (${res.status}): ${text}`);
+    const preview = text.length > 200 ? text.slice(0, 200) : text;
+    throw new Error(`Token refresh failed (${res.status}): ${preview}`);
   }
   const data = await res.json();
   return {
@@ -73,6 +77,19 @@ async function doRefresh(refreshToken) {
 
 export async function getToken() {
   if (_cache && !isExpired(_cache.expiresAt)) return _cache;
+
+  // Try refresh cached token first
+  if (_cache && isExpired(_cache.expiresAt)) {
+    try {
+      const refreshed = await doRefresh(_cache.refreshToken);
+      _cache = refreshed;
+      return { accessToken: refreshed.accessToken, refreshToken: refreshed.refreshToken };
+    } catch {
+      // Refresh failed — fall through to reload from disk
+    }
+  }
+
+  // Reload from disk (Claude Code CLI may have updated credentials)
   let creds = loadCredentials();
   if (isExpired(creds.expiresAt)) {
     creds = await doRefresh(creds.refreshToken);

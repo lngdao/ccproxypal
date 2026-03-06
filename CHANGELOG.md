@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.5] - 2026-03-06
+
+### Added
+- **Status bar** — Bottom status bar with log panel toggle (left) and app name/version (right)
+- **Log panel** — Realtime log overlay showing timestamped, color-coded entries from all backend services (proxy, OAuth, tunnel, telegram); auto-scroll, clear, and close controls
+- **Log system** — Zustand-based `logStore` with `app-log` Tauri event bridge; backend `eprintln!` replaced with `app.emit("app-log", ...)` throughout proxy, OAuth, and command layers
+
+### Fixed
+- **Port bind failure silent success** — `start_proxy` now waits for TCP bind result via oneshot channel before returning; returns actual error (e.g. "address already in use") instead of false success
+- **Backend logs not visible** — All `eprintln!` in proxy/OAuth code replaced with Tauri event emissions; 429/401/403 errors, token refresh status, and network errors now appear in the log panel
+- **Token cache nulled on refresh failure** — Removed `*token_cache = None` on 401 refresh failure that caused cascading "No API key available" errors for all subsequent requests
+- **Concurrent refresh token race** — Multiple simultaneous requests no longer all attempt to refresh with the same rotating refresh_token; checks if cache was already updated by a concurrent request before refreshing
+- **Manual token fake expiry** — `set_token_manually` now decodes the JWT `exp` claim for real expiry instead of hardcoding `now + 55 min`
+- **OAuth error message** — When OAuth fails (e.g. 403 "not allowed for this organization") and no API key is configured, the error now includes the actual Anthropic error body instead of generic "No API key available"
+- **OAuth error body truncation** — Removed 200-char limit on refresh token error body; full error is now logged and propagated
+
+### Changed
+- **Tab rendering** — All tabs are now always mounted (CSS `display` toggle) instead of conditional rendering, ensuring realtime updates across inactive tabs
+- **Default settings** — `strip_unsupported_fields` now defaults to `true`
+
 ## [0.1.4] - 2026-03-06
 
 ### Fixed

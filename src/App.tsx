@@ -1,9 +1,13 @@
-import { useState } from "react";
-import { motion, AnimatePresence } from "framer-motion";
+import { useState, useCallback, useEffect } from "react";
+import { motion } from "framer-motion";
+import { listen } from "@tauri-apps/api/event";
+import { getVersion } from "@tauri-apps/api/app";
 import Dashboard from "./components/Dashboard";
 import SettingsPanel from "./components/SettingsPanel";
 import AnalyticsPanel from "./components/AnalyticsPanel";
 import ClientPanel from "./components/ClientPanel";
+import LogPanel from "./components/LogPanel";
+import { useLogStore, LogLevel, LogSource } from "./lib/logStore";
 import "./App.css";
 
 type Tab = "dashboard" | "client" | "analytics" | "settings";
@@ -15,16 +19,33 @@ const tabs: { id: Tab; label: string }[] = [
   { id: "settings", label: "Settings" },
 ];
 
-const tabVariants = {
-  enter: { opacity: 0, filter: "blur(6px)", scale: 0.99 },
-  center: { opacity: 1, filter: "blur(0px)", scale: 1 },
-  exit: { opacity: 0, filter: "blur(6px)", scale: 0.99 },
-};
-
 export default function App() {
   const [activeTab, setActiveTab] = useState<Tab>("dashboard");
+  const [logOpen, setLogOpen] = useState(false);
+  const [appVersion, setAppVersion] = useState("");
+  const logCount = useLogStore((s) => s.logs.length);
+  const addLog = useLogStore((s) => s.addLog);
 
   const handleTabChange = (tab: Tab) => setActiveTab(tab);
+  const toggleLog = useCallback(() => setLogOpen((v) => !v), []);
+
+  useEffect(() => {
+    getVersion().then(setAppVersion);
+  }, []);
+
+  // Listen for backend log events
+  useEffect(() => {
+    const unlisten = listen<{ level: string; source: string; message: string }>(
+      "app-log",
+      (event) => {
+        const { level, source, message } = event.payload;
+        addLog(level as LogLevel, source as LogSource, message);
+      }
+    );
+    return () => {
+      unlisten.then((fn) => fn());
+    };
+  }, [addLog]);
 
   return (
     <div className="app">
@@ -55,22 +76,32 @@ export default function App() {
       </header>
 
       <main className="app-main">
-        <AnimatePresence mode="wait">
-          <motion.div
-            key={activeTab}
-            variants={tabVariants}
-            initial="enter"
-            animate="center"
-            exit="exit"
-            transition={{ duration: 0.18 }}
-          >
-            {activeTab === "dashboard" && <Dashboard />}
-            {activeTab === "client" && <ClientPanel />}
-            {activeTab === "analytics" && <AnalyticsPanel />}
-            {activeTab === "settings" && <SettingsPanel />}
-          </motion.div>
-        </AnimatePresence>
+        <div className="tab-panel" style={{ display: activeTab === "dashboard" ? "block" : "none" }}>
+          <Dashboard />
+        </div>
+        <div className="tab-panel" style={{ display: activeTab === "client" ? "block" : "none" }}>
+          <ClientPanel />
+        </div>
+        <div className="tab-panel" style={{ display: activeTab === "analytics" ? "block" : "none" }}>
+          <AnalyticsPanel />
+        </div>
+        <div className="tab-panel" style={{ display: activeTab === "settings" ? "block" : "none" }}>
+          <SettingsPanel />
+        </div>
       </main>
+
+      {logOpen && <LogPanel onClose={toggleLog} />}
+
+      <footer className="status-bar">
+        <div className="status-bar-left">
+          <button className="status-bar-btn" onClick={toggleLog}>
+            Log{logCount > 0 ? ` (${logCount})` : ""}
+          </button>
+        </div>
+        <div className="status-bar-right">
+          <span className="status-bar-text">ccproxypal{appVersion ? ` v${appVersion}` : ""}</span>
+        </div>
+      </footer>
     </div>
   );
 }

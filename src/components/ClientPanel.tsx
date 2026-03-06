@@ -1,6 +1,7 @@
 import { useEffect, useState, useCallback } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { api, AppStatus, ToolConfigStatus } from "../lib/invoke";
+import { log } from "../lib/logStore";
 
 interface Tool {
   id: keyof ToolConfigStatus;
@@ -71,7 +72,9 @@ export default function ClientPanel() {
       await fn();
       await fetchStatus();
     } catch (e) {
-      setError(String(e));
+      const msg = String(e);
+      setError(msg);
+      log.error("app", msg);
     } finally {
       setLoading((l) => ({ ...l, [key]: false }));
     }
@@ -82,22 +85,27 @@ export default function ClientPanel() {
       if (!accessToken.trim() || !refreshToken.trim()) {
         throw new Error("Please enter both Access Token and Refresh Token.");
       }
+      log.info("app", "Setting token manually...");
       await api.setTokenManually(accessToken.trim(), refreshToken.trim());
+      log.info("proxy", "Starting proxy server...");
       await api.startProxy();
     });
 
   const handleStop = () =>
     withLoading("proxy", async () => {
+      log.info("proxy", "Stopping proxy server...");
       await api.stopProxy();
     });
 
   const handleConfigure = (toolId: string) =>
     withLoading(`tool_${toolId}`, async () => {
+      log.info("app", `Configuring tool: ${toolId}`);
       await api.configureTool(toolId);
     });
 
   const handleRemove = (toolId: string) =>
     withLoading(`tool_${toolId}`, async () => {
+      log.info("app", `Removing tool config: ${toolId}`);
       await api.removeToolConfig(toolId);
     });
 

@@ -1,6 +1,7 @@
 import { useEffect, useState, useCallback } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { api, AppStatus, TelegramStatus, TokenDetails } from "../lib/invoke";
+import { log } from "../lib/logStore";
 
 function StatusDot({ active }: { active: boolean }) {
   return (
@@ -101,7 +102,9 @@ export default function Dashboard() {
       await fn();
       await fetchStatus();
     } catch (e) {
-      setError(String(e));
+      const msg = String(e);
+      setError(msg);
+      log.error("app", msg);
     } finally {
       setLoading((l) => ({ ...l, [key]: false }));
     }
@@ -111,6 +114,7 @@ export default function Dashboard() {
     withLoading("proxy", async () => {
       if (status?.proxy_running) {
         await api.stopProxy();
+        log.info("proxy", "Proxy stopped");
       } else {
         if (!status?.token_valid) {
           const tokenResult = await api.loadToken();
@@ -120,8 +124,10 @@ export default function Dashboard() {
                 "Failed to connect OAuth. Please run `claude auth login` in your terminal first."
             );
           }
+          log.info("app", "OAuth token loaded");
         }
         await api.startProxy();
+        log.info("proxy", `Proxy started on port ${status?.proxy_port}`);
       }
     });
 
@@ -129,8 +135,10 @@ export default function Dashboard() {
     withLoading("tunnel", async () => {
       if (status?.tunnel_running) {
         await api.stopTunnel();
+        log.info("tunnel", "Tunnel stopped");
       } else {
         await api.startTunnel();
+        log.info("tunnel", "Tunnel starting...");
       }
     });
 
@@ -138,8 +146,10 @@ export default function Dashboard() {
     withLoading("telegram", async () => {
       if (status?.telegram_running) {
         await api.stopTelegramBot();
+        log.info("telegram", "Telegram bot stopped");
       } else {
         await api.startTelegramBot();
+        log.info("telegram", "Telegram bot started");
       }
     });
 

@@ -8,6 +8,24 @@ use crate::state::{AppState, ProxyConfig, ProxyServerHandle, TelegramConfig, Tok
 use crate::telegram::{run_bot, BotContext};
 use crate::tunnel;
 
+// ─── Logging helper ──────────────────────────────────────────────────────────
+
+#[derive(Clone, serde::Serialize)]
+pub struct LogEvent {
+    pub level: String,
+    pub source: String,
+    pub message: String,
+}
+
+pub fn emit_log(app: &AppHandle, level: &str, source: &str, message: &str) {
+    let event = LogEvent {
+        level: level.to_string(),
+        source: source.to_string(),
+        message: message.to_string(),
+    };
+    let _ = app.emit("app-log", event);
+}
+
 // ─── Status ──────────────────────────────────────────────────────────────────
 
 #[derive(serde::Serialize)]
@@ -60,31 +78,42 @@ pub struct TokenStatus {
 }
 
 #[tauri::command]
-pub async fn refresh_token(state: State<'_, AppState>) -> Result<TokenStatus, String> {
+pub async fn refresh_token(
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<TokenStatus, String> {
+    emit_log(&app, "info", "app", "Refreshing OAuth token...");
     let cached = { state.token_cache.lock().unwrap().clone() };
     match get_valid_token(cached).await {
         Ok(token) => {
             let expires_at = token.expires_at;
             *state.token_cache.lock().unwrap() = Some(token);
-            // token_cache is an Arc shared with the proxy server —
-            // the proxy server sees the updated token immediately.
+            emit_log(&app, "info", "app", &format!("OAuth token valid, expires at {}", expires_at));
             Ok(TokenStatus {
                 valid: true,
                 expires_at: Some(expires_at),
                 error: None,
             })
         }
-        Err(e) => Ok(TokenStatus {
-            valid: false,
-            expires_at: None,
-            error: Some(e.to_string()),
-        }),
+        Err(e) => {
+            let msg = e.to_string();
+            emit_log(&app, "error", "app", &format!("OAuth token refresh failed: {}", msg));
+            Ok(TokenStatus {
+                valid: false,
+                expires_at: None,
+                error: Some(msg),
+            })
+        }
     }
 }
 
 #[tauri::command]
-pub async fn load_token(state: State<'_, AppState>) -> Result<TokenStatus, String> {
-    refresh_token(state).await
+pub async fn load_token(
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<TokenStatus, String> {
+    emit_log(&app, "info", "app", "Loading OAuth token from credentials...");
+    refresh_token(app, state).await
 }
 
 #[derive(serde::Serialize)]
@@ -111,14 +140,22 @@ pub async fn get_token_details(state: State<'_, AppState>) -> Result<TokenDetail
 // ─── Proxy server ─────────────────────────────────────────────────────────────
 
 #[tauri::command]
-pub async fn start_proxy(state: State<'_, AppState>) -> Result<String, String> {
-    let mut handle_lock = state.proxy_handle.lock().unwrap();
-    if handle_lock.is_some() {
-        return Ok("Proxy already running".to_string());
+pub async fn start_proxy(
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<String, String> {
+    {
+        let handle_lock = state.proxy_handle.lock().unwrap();
+        if handle_lock.is_some() {
+            emit_log(&app, "warn", "proxy", "Proxy already running");
+            return Ok("Proxy already running".to_string());
+        }
     }
 
     let config = state.config.lock().unwrap().clone();
     let port = config.port;
+
+    emit_log(&app, "info", "proxy", &format!("Starting proxy server on port {}...", port));
 
     let db_path = {
         let db = state.db.lock().unwrap();
@@ -127,45 +164,70 @@ pub async fn start_proxy(state: State<'_, AppState>) -> Result<String, String> {
 
     let server_state = ServerState {
         config: Arc::new(config),
-        // Share the SAME Arc — UI refresh_token and proxy server both see the same token.
         token_cache: state.token_cache.clone(),
         db_path,
+        app: app.clone(),
     };
 
     let router = build_router(server_state);
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+    let (bind_tx, bind_rx) = tokio::sync::oneshot::channel::<Result<(), String>>();
+    let app_clone = app.clone();
 
     let join = tokio::spawn(async move {
         let listener = match tokio::net::TcpListener::bind(format!("0.0.0.0:{}", port)).await {
-            Ok(l) => l,
+            Ok(l) => {
+                let _ = bind_tx.send(Ok(()));
+                l
+            }
             Err(e) => {
-                eprintln!("Failed to bind proxy on port {}: {}", port, e);
+                let msg = format!("Failed to bind on port {}: {}", port, e);
+                emit_log(&app_clone, "error", "proxy", &msg);
+                let _ = bind_tx.send(Err(msg));
                 return;
             }
         };
+        emit_log(&app_clone, "info", "proxy", &format!("Listening on 0.0.0.0:{}", port));
         axum::serve(listener, router)
             .with_graceful_shutdown(async {
                 let _ = shutdown_rx.await;
             })
             .await
             .ok();
+        emit_log(&app_clone, "info", "proxy", "Server shut down");
     });
 
-    *handle_lock = Some(ProxyServerHandle {
-        shutdown_tx,
-        _join: join,
-    });
-
-    Ok(format!("Proxy started on port {}", port))
+    match bind_rx.await {
+        Ok(Ok(())) => {
+            let mut handle_lock = state.proxy_handle.lock().unwrap();
+            *handle_lock = Some(ProxyServerHandle {
+                shutdown_tx,
+                _join: join,
+            });
+            emit_log(&app, "info", "proxy", &format!("Proxy started on port {}", port));
+            Ok(format!("Proxy started on port {}", port))
+        }
+        Ok(Err(msg)) => Err(msg),
+        Err(_) => {
+            let msg = "Proxy task exited unexpectedly".to_string();
+            emit_log(&app, "error", "proxy", &msg);
+            Err(msg)
+        }
+    }
 }
 
 #[tauri::command]
-pub async fn stop_proxy(state: State<'_, AppState>) -> Result<String, String> {
+pub async fn stop_proxy(
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<String, String> {
     let mut handle_lock = state.proxy_handle.lock().unwrap();
     if let Some(handle) = handle_lock.take() {
         let _ = handle.shutdown_tx.send(());
+        emit_log(&app, "info", "proxy", "Proxy stopped");
         Ok("Proxy stopped".to_string())
     } else {
+        emit_log(&app, "warn", "proxy", "Proxy was not running");
         Ok("Proxy was not running".to_string())
     }
 }
@@ -179,30 +241,45 @@ pub async fn start_tunnel(
 ) -> Result<String, String> {
     let mut proc_lock = state.tunnel_process.lock().unwrap();
     if proc_lock.is_some() {
+        emit_log(&app, "warn", "tunnel", "Tunnel already running");
         return Ok("Tunnel already running".to_string());
     }
 
     let port = state.config.lock().unwrap().port;
+    emit_log(&app, "info", "tunnel", &format!("Starting cloudflare tunnel for port {}...", port));
     let app_clone = app.clone();
 
     let child = tunnel::start_tunnel(port, move |url| {
-        // Persist URL into AppState so get_status() can read it
         let app_state = app_clone.state::<AppState>();
         *app_state.tunnel_url.lock().unwrap() = Some(url.clone());
+        emit_log(&app_clone, "info", "tunnel", &format!("Tunnel URL: {}", url));
         let _ = app_clone.emit("tunnel-url", url);
     })
-    .map_err(|e| e.to_string())?;
+    .map_err(|e| {
+        let msg = e.to_string();
+        emit_log(&app, "error", "tunnel", &format!("Failed to start tunnel: {}", msg));
+        msg
+    })?;
 
     *proc_lock = Some(child);
+    emit_log(&app, "info", "tunnel", "Tunnel process started, waiting for URL...");
     Ok("Tunnel starting...".to_string())
 }
 
 #[tauri::command]
-pub async fn stop_tunnel(state: State<'_, AppState>) -> Result<String, String> {
+pub async fn stop_tunnel(
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<String, String> {
     let mut proc_lock = state.tunnel_process.lock().unwrap();
     if let Some(mut child) = proc_lock.take() {
-        tunnel::stop_tunnel(&mut child).map_err(|e| e.to_string())?;
+        tunnel::stop_tunnel(&mut child).map_err(|e| {
+            let msg = e.to_string();
+            emit_log(&app, "error", "tunnel", &format!("Failed to stop tunnel: {}", msg));
+            msg
+        })?;
         *state.tunnel_url.lock().unwrap() = None;
+        emit_log(&app, "info", "tunnel", "Tunnel stopped");
         Ok("Tunnel stopped".to_string())
     } else {
         Ok("Tunnel was not running".to_string())
@@ -228,9 +305,11 @@ pub async fn get_settings(state: State<'_, AppState>) -> Result<ProxyConfig, Str
 
 #[tauri::command]
 pub async fn save_settings(
+    app: AppHandle,
     state: State<'_, AppState>,
     config: ProxyConfig,
 ) -> Result<String, String> {
+    emit_log(&app, "info", "app", &format!("Settings saved (port={}, strip_unsupported={})", config.port, config.strip_unsupported_fields));
     *state.config.lock().unwrap() = config;
     Ok("Settings saved".to_string())
 }
@@ -250,9 +329,13 @@ pub async fn get_analytics(
 }
 
 #[tauri::command]
-pub async fn reset_analytics(state: State<'_, AppState>) -> Result<String, String> {
+pub async fn reset_analytics(
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<String, String> {
     let conn = state.db.lock().unwrap();
     db::reset_analytics(&conn).map_err(|e| e.to_string())?;
+    emit_log(&app, "info", "app", "Analytics data reset");
     Ok("Analytics reset".to_string())
 }
 
@@ -264,11 +347,13 @@ pub async fn get_budget(state: State<'_, AppState>) -> Result<BudgetSettings, St
 
 #[tauri::command]
 pub async fn save_budget(
+    app: AppHandle,
     state: State<'_, AppState>,
     budget: BudgetSettings,
 ) -> Result<String, String> {
     let conn = state.db.lock().unwrap();
     db::save_budget(&conn, &budget).map_err(|e| e.to_string())?;
+    emit_log(&app, "info", "app", "Budget settings saved");
     Ok("Budget saved".to_string())
 }
 
@@ -281,9 +366,11 @@ pub async fn get_telegram_config(state: State<'_, AppState>) -> Result<TelegramC
 
 #[tauri::command]
 pub async fn save_telegram_config(
+    app: AppHandle,
     state: State<'_, AppState>,
     config: TelegramConfig,
 ) -> Result<String, String> {
+    emit_log(&app, "info", "telegram", &format!("Telegram config saved (enabled={}, users={})", config.enabled, config.allowed_user_ids.len()));
     *state.telegram_config.lock().unwrap() = config;
     Ok("Telegram config saved".to_string())
 }
@@ -313,6 +400,7 @@ pub async fn start_telegram_bot(
 ) -> Result<String, String> {
     let mut handle_lock = state.telegram_handle.lock().unwrap();
     if handle_lock.is_some() {
+        emit_log(&app, "warn", "telegram", "Telegram bot already running");
         return Ok("Telegram bot already running".to_string());
     }
 
@@ -323,18 +411,18 @@ pub async fn start_telegram_bot(
         .ok_or("No Telegram bot token configured")?;
 
     if !cfg.enabled {
+        emit_log(&app, "error", "telegram", "Telegram bot is not enabled in settings");
         return Err("Telegram bot is not enabled in settings".to_string());
     }
 
     let port = state.config.lock().unwrap().port;
+    emit_log(&app, "info", "telegram", "Starting Telegram bot...");
 
-    // Share the same token_cache Arc as AppState and the proxy server.
     let token_cache = state.token_cache.clone();
     let proxy_running = Arc::new(std::sync::Mutex::new(
         state.proxy_handle.lock().unwrap().is_some(),
     ));
 
-    // Use the app handle to access tunnel_url from state inside the bot
     let app_clone = app.clone();
 
     let ctx = BotContext {
@@ -342,7 +430,6 @@ pub async fn start_telegram_bot(
         allowed_user_ids: cfg.allowed_user_ids,
         token_cache: token_cache.clone(),
         tunnel_url: {
-            // Create a shared tunnel_url Arc that syncs from state
             let url = state.tunnel_url.lock().unwrap().clone();
             Arc::new(std::sync::Mutex::new(url))
         },
@@ -353,8 +440,6 @@ pub async fn start_telegram_bot(
     let tunnel_url_shared = ctx.tunnel_url.clone();
 
     let join = tokio::spawn(async move {
-        // Keep tunnel_url in sync from AppState every 10 seconds.
-        // (token_cache is already a shared Arc — no sync needed for tokens.)
         let sync_app = app_clone.clone();
         tokio::spawn(async move {
             loop {
@@ -369,34 +454,52 @@ pub async fn start_telegram_bot(
     });
 
     *handle_lock = Some(join);
+    emit_log(&app, "info", "telegram", "Telegram bot started");
     Ok("Telegram bot started".to_string())
 }
 
 #[tauri::command]
-pub async fn stop_telegram_bot(state: State<'_, AppState>) -> Result<String, String> {
+pub async fn stop_telegram_bot(
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<String, String> {
     let mut handle_lock = state.telegram_handle.lock().unwrap();
     if let Some(handle) = handle_lock.take() {
         handle.abort();
+        emit_log(&app, "info", "telegram", "Telegram bot stopped");
         Ok("Telegram bot stopped".to_string())
     } else {
         Ok("Telegram bot was not running".to_string())
     }
 }
 
-// ─── Client mode: manual token injection ─────────────────────────────────────
+/// ─── Client mode: manual token injection ─────────────────────────────────────
+
+/// Decode a base64url-encoded JWT payload and return the `exp` claim in milliseconds.
+fn parse_jwt_expiry_ms(token: &str) -> Option<i64> {
+    use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+    let payload_b64 = token.splitn(3, '.').nth(1)?;
+    let payload = URL_SAFE_NO_PAD.decode(payload_b64).ok()?;
+    let json: serde_json::Value = serde_json::from_slice(&payload).ok()?;
+    let exp = json["exp"].as_i64()?;
+    Some(exp * 1000) // seconds → milliseconds
+}
 
 #[tauri::command]
 pub async fn set_token_manually(
+    app: AppHandle,
     state: State<'_, AppState>,
     access_token: String,
     refresh_token: String,
 ) -> Result<String, String> {
-    // Set expires_at slightly in the future so the provided access_token is used as-is
-    // without triggering an immediate refresh. The 401-retry logic in proxy_request will
-    // handle the case where the token is actually expired.
-    let expires_at = chrono::Utc::now().timestamp_millis() + 55 * 60 * 1000; // 55 min
+    // Try to read real expiry from JWT; fall back to 55-minute assumption
+    let expires_at = parse_jwt_expiry_ms(&access_token)
+        .unwrap_or_else(|| chrono::Utc::now().timestamp_millis() + 55 * 60 * 1000);
+
+    let expires_in_min = (expires_at - chrono::Utc::now().timestamp_millis()) / 60_000;
     let token = crate::state::TokenInfo { access_token, refresh_token, expires_at };
     *state.token_cache.lock().unwrap() = Some(token);
+    emit_log(&app, "info", "app", &format!("Token set manually (expires in ~{}m)", expires_in_min));
     Ok("Token set successfully".to_string())
 }
 
@@ -444,6 +547,7 @@ async fn check_tool_configured(tool: &str, proxy_url: &str) -> bool {
 
 #[tauri::command]
 pub async fn configure_tool(
+    app: AppHandle,
     state: State<'_, AppState>,
     tool: String,
 ) -> Result<String, String> {
@@ -455,7 +559,7 @@ pub async fn configure_tool(
 
     let home = dirs::home_dir().ok_or("Cannot find home directory")?;
 
-    match tool.as_str() {
+    let result = match tool.as_str() {
         "claude_code" => {
             let path = home.join(".claude").join("settings.json");
             write_env_to_json(&path, &proxy_url).await
@@ -465,11 +569,18 @@ pub async fn configure_tool(
             write_env_to_json(&path, &proxy_url).await
         }
         _ => Err(format!("Unknown tool: {}", tool)),
+    };
+
+    match &result {
+        Ok(msg) => emit_log(&app, "info", "app", &format!("Tool '{}' configured: {}", tool, msg)),
+        Err(msg) => emit_log(&app, "error", "app", &format!("Failed to configure '{}': {}", tool, msg)),
     }
+
+    result
 }
 
 #[tauri::command]
-pub async fn remove_tool_config(tool: String) -> Result<String, String> {
+pub async fn remove_tool_config(app: AppHandle, tool: String) -> Result<String, String> {
     let home = dirs::home_dir().ok_or("Cannot find home directory")?;
     let path = match tool.as_str() {
         "claude_code" => home.join(".claude").join("settings.json"),
@@ -497,6 +608,7 @@ pub async fn remove_tool_config(tool: String) -> Result<String, String> {
         .await
         .map_err(|e| e.to_string())?;
 
+    emit_log(&app, "info", "app", &format!("Tool '{}' config removed", tool));
     Ok("Config removed".to_string())
 }
 

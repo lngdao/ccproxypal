@@ -8,6 +8,7 @@ use axum::{
 };
 use serde_json::{json, Value};
 use std::sync::{Arc, Mutex};
+use tauri::Emitter;
 
 use crate::db::{self, NewRequest};
 use crate::proxy::adapter::{
@@ -23,6 +24,15 @@ pub struct ServerState {
     /// Shared with AppState — same Arc, so UI token refresh is visible here instantly.
     pub token_cache: Arc<Mutex<Option<TokenInfo>>>,
     pub db_path: String,
+    pub app: tauri::AppHandle,
+}
+
+pub fn proxy_log(app: &tauri::AppHandle, level: &str, source: &str, message: &str) {
+    let _ = app.emit("app-log", serde_json::json!({
+        "level": level,
+        "source": source,
+        "message": message,
+    }));
 }
 
 fn extract_api_key(headers: &HeaderMap) -> Option<String> {
@@ -162,6 +172,7 @@ async fn messages_handler(
         state.config.clone(),
         state.token_cache.clone(),
         user_api_key,
+        &state.app,
     )
     .await
     {
@@ -171,6 +182,10 @@ async fn messages_handler(
                 ProxySource::ClaudeCode => "claude_code",
                 ProxySource::ApiKey => "api_key",
             };
+
+            proxy_log(&state.app, "info", "be", &format!(
+                "{} {} → {} ({})", if is_stream { "stream" } else { "request" }, model, status.as_u16(), source_str
+            ));
 
             if is_stream {
                 let resp_headers = resp.headers().clone();
@@ -213,8 +228,10 @@ async fn messages_handler(
             }
         }
         Err(e) => {
-            record_to_db(&state.db_path, &model, "error", 0, 0, is_stream, start.elapsed().as_millis() as i64, 0.0, Some(&e.to_string()));
-            error_response(500, &e.to_string())
+            let msg = e.to_string();
+            proxy_log(&state.app, "error", "be", &format!("Request error (messages): {}", msg));
+            record_to_db(&state.db_path, &model, "error", 0, 0, is_stream, start.elapsed().as_millis() as i64, 0.0, Some(&msg));
+            error_response(500, &msg)
         }
     }
 }
@@ -258,6 +275,7 @@ async fn chat_completions_handler(
         state.config.clone(),
         state.token_cache.clone(),
         user_api_key,
+        &state.app,
     )
     .await
     {
@@ -267,6 +285,10 @@ async fn chat_completions_handler(
                 ProxySource::ClaudeCode => "claude_code",
                 ProxySource::ApiKey => "api_key",
             };
+
+            proxy_log(&state.app, "info", "be", &format!(
+                "{} {} → {} ({})", if is_stream { "stream" } else { "request" }, original_model, status.as_u16(), source_str
+            ));
 
             if is_stream {
                 // For streaming, convert Anthropic SSE to OpenAI SSE while tracking usage
@@ -313,8 +335,10 @@ async fn chat_completions_handler(
             }
         }
         Err(e) => {
-            record_to_db(&state.db_path, &model, "error", 0, 0, is_stream, start.elapsed().as_millis() as i64, 0.0, Some(&e.to_string()));
-            error_response(500, &e.to_string())
+            let msg = e.to_string();
+            proxy_log(&state.app, "error", "be", &format!("Request error (chat): {}", msg));
+            record_to_db(&state.db_path, &model, "error", 0, 0, is_stream, start.elapsed().as_millis() as i64, 0.0, Some(&msg));
+            error_response(500, &msg)
         }
     }
 }

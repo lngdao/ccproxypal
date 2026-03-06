@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use crate::state::TokenInfo;
 
 const CLAUDE_CLIENT_ID: &str = "9d1c250a-e61b-44d9-88ed-5944d1962f5e";
-const ANTHROPIC_TOKEN_URL: &str = "https://console.anthropic.com/oauth/token";
+const ANTHROPIC_TOKEN_URL: &str = "https://api.anthropic.com/v1/oauth/token";
 
 #[derive(Debug, Deserialize)]
 struct ClaudeAiOauth {
@@ -90,16 +90,17 @@ pub async fn load_credentials() -> Result<TokenInfo> {
 /// Refresh the OAuth access token using the refresh token
 pub async fn refresh_token(refresh_token_value: &str) -> Result<TokenInfo> {
     let client = reqwest::Client::new();
-    let params = [
-        ("grant_type", "refresh_token"),
-        ("refresh_token", refresh_token_value),
-        ("client_id", CLAUDE_CLIENT_ID),
-    ];
+    let payload = serde_json::json!({
+        "grant_type": "refresh_token",
+        "refresh_token": refresh_token_value,
+        "client_id": CLAUDE_CLIENT_ID,
+    });
 
     let response = client
         .post(ANTHROPIC_TOKEN_URL)
-        .header("Content-Type", "application/x-www-form-urlencoded")
-        .form(&params)
+        .header("Content-Type", "application/json")
+        .header("Accept", "application/json")
+        .json(&payload)
         .send()
         .await?;
 
@@ -121,19 +122,44 @@ pub async fn refresh_token(refresh_token_value: &str) -> Result<TokenInfo> {
 
 /// Get a valid (non-expired) token, refreshing if needed.
 /// Takes optional cached token, returns updated token.
+///
+/// Strategy:
+/// 1. If cached token is still valid → use it
+/// 2. If cached token expired → try refresh
+/// 3. If refresh fails → reload from disk (Claude Code CLI may have updated credentials)
+/// 4. If reloaded token is expired → try refresh with the new refresh token
 pub async fn get_valid_token(cached: Option<TokenInfo>) -> Result<TokenInfo> {
-    if let Some(token) = cached {
+    if let Some(ref token) = cached {
         if !token.is_expired() {
-            return Ok(token);
+            return Ok(token.clone());
         }
-        // Token expired — refresh
-        return refresh_token(&token.refresh_token.clone()).await;
+        // Token expired — try refresh
+        match refresh_token(&token.refresh_token).await {
+            Ok(refreshed) => return Ok(refreshed),
+            Err(e) => {
+                eprintln!("[ccproxypal] Token refresh failed, reloading from disk: {}", e);
+                // Fall through to reload from disk
+            }
+        }
     }
 
-    // No cached token — load from disk
-    let token = load_credentials().await?;
-    if token.is_expired() {
-        return refresh_token(&token.refresh_token.clone()).await;
+    // Reload from disk — Claude Code CLI may have stored fresh credentials
+    let disk_token = load_credentials().await?;
+
+    // If the disk token has a different refresh token than what we tried, or we had no cache
+    let already_tried = cached.as_ref().map(|c| c.refresh_token.as_str());
+    let disk_is_different = already_tried.map_or(true, |tried| tried != disk_token.refresh_token);
+
+    if !disk_token.is_expired() {
+        return Ok(disk_token);
     }
-    Ok(token)
+
+    // Only attempt refresh with disk token if it's different from what we already tried
+    if disk_is_different {
+        return refresh_token(&disk_token.refresh_token).await;
+    }
+
+    Err(anyhow!(
+        "OAuth token expired and refresh failed. Please run 'claude auth login' to re-authenticate."
+    ))
 }

@@ -47,7 +47,7 @@ impl Default for ProxyConfig {
             budget_daily: None,
             budget_weekly: None,
             budget_monthly: None,
-            strip_unsupported_fields: false,
+            strip_unsupported_fields: true,
         }
     }
 }

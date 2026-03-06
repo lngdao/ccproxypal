@@ -43,6 +43,7 @@ regex = "1"
 chrono = { version = "0.4", features = ["serde"] }
 anyhow = "1"
 thiserror = "1"
+base64 = "0.22"
 futures-util = "0.3"
 tokio-stream = "0.1"
 async-stream = "0.3"

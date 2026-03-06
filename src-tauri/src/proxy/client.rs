@@ -1,6 +1,7 @@
 use anyhow::{anyhow, Result};
 use serde_json::{json, Value};
 use std::sync::Arc;
+use tauri::Emitter;
 
 use crate::oauth::get_valid_token;
 use crate::state::{ProxyConfig, TokenInfo};
@@ -177,7 +178,16 @@ pub async fn proxy_request(
     config: Arc<ProxyConfig>,
     token_cache: Arc<std::sync::Mutex<Option<TokenInfo>>>,
     user_api_key: Option<String>,
+    app: &tauri::AppHandle,
 ) -> Result<(reqwest::Response, ProxySource)> {
+    let plog = |level: &str, msg: &str| {
+        let _ = app.emit("app-log", serde_json::json!({
+            "level": level, "source": "be", "message": msg
+        }));
+    };
+
+    let mut last_oauth_error: Option<String> = None;
+
     if config.claude_code_first {
         // Read cached token with sync lock (held briefly, no await inside).
         let cached = { token_cache.lock().unwrap().clone() };
@@ -194,45 +204,61 @@ pub async fn proxy_request(
                         match status {
                             200 => return Ok((resp, ProxySource::ClaudeCode)),
                             401 => {
-                                eprintln!("[ccproxypal] Anthropic returned 401 — access_token rejected, attempting refresh");
-                                match crate::oauth::refresh_token(&token.refresh_token).await {
-                                    Ok(refreshed) => {
-                                        eprintln!("[ccproxypal] Token refresh succeeded, retrying request");
-                                        *token_cache.lock().unwrap() = Some(refreshed.clone());
-                                        match make_claude_code_request(endpoint, &body, &refreshed, strip).await {
-                                            Ok(resp2) => return Ok((resp2, ProxySource::ClaudeCode)),
-                                            Err(e) => eprintln!("[ccproxypal] Retry after refresh failed: {}", e),
-                                        }
+                                plog("warn", "Anthropic returned 401 — attempting token refresh");
+
+                                // Check if a concurrent request already refreshed the token
+                                let current_cached = { token_cache.lock().unwrap().clone() };
+                                let already_refreshed = current_cached
+                                    .as_ref()
+                                    .map_or(false, |c| c.access_token != token.access_token);
+
+                                if already_refreshed {
+                                    let new_token = current_cached.unwrap();
+                                    plog("info", "Using token refreshed by concurrent request, retrying");
+                                    match make_claude_code_request(endpoint, &body, &new_token, strip).await {
+                                        Ok(resp2) => return Ok((resp2, ProxySource::ClaudeCode)),
+                                        Err(e) => plog("error", &format!("Retry with concurrent-refreshed token failed: {}", e)),
                                     }
-                                    Err(e) => {
-                                        eprintln!("[ccproxypal] Token refresh failed: {}", e);
-                                        *token_cache.lock().unwrap() = None;
+                                } else {
+                                    match crate::oauth::refresh_token(&token.refresh_token).await {
+                                        Ok(refreshed) => {
+                                            plog("info", "Token refresh succeeded, retrying request");
+                                            *token_cache.lock().unwrap() = Some(refreshed.clone());
+                                            match make_claude_code_request(endpoint, &body, &refreshed, strip).await {
+                                                Ok(resp2) => return Ok((resp2, ProxySource::ClaudeCode)),
+                                                Err(e) => plog("error", &format!("Retry after refresh failed: {}", e)),
+                                            }
+                                        }
+                                        Err(e) => {
+                                            plog("error", &format!("Token refresh failed: {}", e));
+                                            // Do NOT null the cache — keep old token so next request can retry
+                                        }
                                     }
                                 }
                                 // Fall through to API key
                             }
                             _ => {
-                                // For 400/403/429/5xx — log the body so we can debug
                                 let body_text = resp.text().await.unwrap_or_default();
-                                eprintln!("[ccproxypal] Anthropic returned {} — body: {}", status, &body_text[..body_text.len().min(500)]);
+                                let level = if status == 429 { "warn" } else { "error" };
+                                plog(level, &format!("Anthropic returned {} — {}", status, body_text));
                                 // Fall through to API key only on retriable errors
                                 if status == 429 || status == 403 || status == 400 {
+                                    last_oauth_error = Some(format!("OAuth error {}: {}", status, body_text));
                                     // Fall through to API key
                                 } else {
-                                    // For other statuses (e.g. 200 range edge cases, 5xx), return as error
-                                    return Err(anyhow::anyhow!("Anthropic error {}: {}", status, &body_text[..body_text.len().min(200)]));
+                                    return Err(anyhow::anyhow!("Anthropic error {}: {}", status, body_text));
                                 }
                             }
                         }
                     }
                     Err(e) => {
-                        eprintln!("[ccproxypal] Claude Code request network error: {}", e);
+                        plog("error", &format!("Claude Code request network error: {}", e));
                         // Fall through to API key
                     }
                 }
             }
             Err(e) => {
-                eprintln!("Token load/refresh error: {}", e);
+                plog("error", &format!("Token load/refresh error: {}", e));
                 // Fall through to API key
             }
         }
@@ -241,7 +267,13 @@ pub async fn proxy_request(
     // Fallback to API key
     let api_key = user_api_key
         .or_else(|| config.anthropic_api_key.clone())
-        .ok_or_else(|| anyhow!("No API key available and Claude Code OAuth failed"))?;
+        .ok_or_else(|| {
+            if let Some(ref oauth_err) = last_oauth_error {
+                anyhow!("No API key configured. Claude Code OAuth failed: {}", oauth_err)
+            } else {
+                anyhow!("No API key available and Claude Code OAuth failed")
+            }
+        })?;
 
     let resp = make_direct_api_request(endpoint, &body, &api_key).await?;
     Ok((resp, ProxySource::ApiKey))

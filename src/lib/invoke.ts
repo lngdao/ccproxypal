@@ -10,6 +10,7 @@ export interface AppStatus {
   telegram_running: boolean;
   provider_running: boolean;
   provider_hub_url: string | null;
+  provider_healthy: boolean;
 }
 
 export interface TokenStatus {
@@ -41,6 +42,7 @@ export interface ProxyConfig {
 export interface PoolEntryStatus {
   provider_id: string;
   healthy: boolean;
+  stale: boolean;
   expired: boolean;
   expires_at: number;
   provided_at: number;
@@ -99,9 +101,10 @@ export interface TelegramStatus {
 
 export const api = {
   getStatus: () => invoke<AppStatus>("get_status"),
-  refreshToken: () => invoke<TokenStatus>("refresh_token"),
-  loadToken: () => invoke<TokenStatus>("load_token"),
-  reloadToken: () => invoke<TokenStatus>("reload_token"),
+  // COMMENTED OUT: Setup token flow — no refresh/load needed
+  // refreshToken: () => invoke<TokenStatus>("refresh_token"),
+  // loadToken: () => invoke<TokenStatus>("load_token"),
+  // reloadToken: () => invoke<TokenStatus>("reload_token"),
   getTokenDetails: () => invoke<TokenDetails>("get_token_details"),
 
   startProxy: () => invoke<string>("start_proxy"),
@@ -129,9 +132,9 @@ export const api = {
   stopTelegramBot: () => invoke<string>("stop_telegram_bot"),
   getTelegramStatus: () => invoke<TelegramStatus>("get_telegram_status"),
 
-  // Client mode
-  setTokenManually: (accessToken: string, refreshToken: string) =>
-    invoke<string>("set_token_manually", { accessToken, refreshToken }),
+  // Client mode — setup token (single token, no refresh)
+  setTokenManually: (accessToken: string) =>
+    invoke<string>("set_token_manually", { accessToken }),
   configureTool: (tool: string, url?: string) => invoke<string>("configure_tool", { tool, url }),
   removeToolConfig: (tool: string) => invoke<string>("remove_tool_config", { tool }),
   getToolConfigStatus: () => invoke<ToolConfigStatus>("get_tool_config_status"),

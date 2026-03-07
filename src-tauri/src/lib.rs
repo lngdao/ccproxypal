@@ -8,7 +8,7 @@ mod tunnel;
 
 use commands::*;
 use db::init_db;
-use state::{AppState, ProxyConfig, TelegramConfig, TokenPool};
+use state::{AppState, ProxyConfig, TelegramConfig};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -22,18 +22,25 @@ pub fn run() {
     let conn = rusqlite::Connection::open(&db_path).expect("Failed to open SQLite database");
     init_db(&conn).expect("Failed to initialize database");
 
+    // Restore settings from previous session
+    let proxy_config: ProxyConfig = db::load_setting(&conn, "proxy_config")
+        .ok().flatten().unwrap_or_default();
+    let telegram_config: TelegramConfig = db::load_setting(&conn, "telegram_config")
+        .ok().flatten().unwrap_or_default();
+
     let app_state = AppState {
         proxy_handle: std::sync::Mutex::new(None),
         token_cache: std::sync::Arc::new(std::sync::Mutex::new(None)),
-        token_pool: std::sync::Arc::new(std::sync::Mutex::new(TokenPool::default())),
+        token_pool: std::sync::Arc::new(std::sync::Mutex::new(state::TokenPool::default())),
         tunnel_process: std::sync::Mutex::new(None),
         tunnel_url: std::sync::Mutex::new(None),
         db: std::sync::Mutex::new(conn),
-        config: std::sync::Mutex::new(ProxyConfig::default()),
-        telegram_config: std::sync::Mutex::new(TelegramConfig::default()),
+        config: std::sync::Mutex::new(proxy_config),
+        telegram_config: std::sync::Mutex::new(telegram_config),
         telegram_handle: std::sync::Mutex::new(None),
         provider_handle: std::sync::Mutex::new(None),
         provider_hub_url: std::sync::Mutex::new(None),
+        provider_healthy: std::sync::Arc::new(std::sync::Mutex::new(false)),
     };
 
     tauri::Builder::default()

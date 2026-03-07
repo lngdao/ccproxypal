@@ -5,7 +5,35 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]   
+## [Unreleased]
+
+## [0.3.0] - 2026-03-07
+
+### Added
+
+#### CLI Hub Mode & Anti-Ban
+- **`save-token` command** — `ccproxypal save-token <token>` saves setup token to `~/.config/ccproxypal/token` (shared between app and CLI)
+- **`host` command** — One-command hub hosting: starts proxy + Cloudflare tunnel + token pool; prints pool status every 30s; prints `ccproxypal provide` command for contributors
+- **Hub endpoints in CLI** — `/hub/provide`, `/hub/status`, `/hub/revoke` with optional secret authentication; `serve --secret <s>` enables hub mode
+- **Token pool (CLI)** — `TokenPool` class mirroring Rust app: round-robin distribution, health tracking, exponential backoff (30s → 5m cap), stale entry pruning
+- **Anti-ban system (CLI)** — Header spoofing (Claude Code version rotation 2.1.66–2.1.70, platform variation), tool injection (8 Claude Code tools), system prompt rewrite with `cache_control`, force streaming, strip unsupported fields (`reasoning_budget`, `context_management`), beta flag merging — no timing delays
+- **Circuit breaker (CLI)** — 3 consecutive errors trips the breaker; escalating cooldowns (1–5 min, then 30 min after 5 trips); auto-recovery on success
+- **Ban detection (CLI)** — Analyzes upstream responses for auth rejection (401/403), rate limiting (429), overload (529), and abuse keywords
+- **SSE-to-JSON reassembly (CLI)** — Collects forced-streaming SSE events back into a complete message JSON for non-streaming clients
+
+#### Pool Staleness System
+- **DNS pre-check** — Provider push validates hub URL via `tokio::net::lookup_host` before first request; clear error on DNS failure
+- **Stale badge in Pool UI** — Unhealthy entries that haven't pushed in 10+ minutes show "Stale" status badge
+
+### Changed
+- **Pool staleness logic** — Healthy entries are never pruned regardless of age; only unhealthy entries are checked for staleness (10 min skip threshold, 30 min prune threshold)
+- **CLI `provide` interval** — Default push interval changed from 300s to 120s; faster retry (30s) when unhealthy
+- **CLI token loading** — Unified 3-source chain: memory cache → `CCPROXYPAL_TOKEN` env var → `~/.config/ccproxypal/token` file
+- **CLI pool-aware routing** — `callAnthropic()` tries pool token first, then local token, with fallback chain on 401
+
+### Fixed
+- **"Host to Pool" Stop button disabled** — Stop button was incorrectly disabled when providing because it checked `!hubUrl || !token_valid`; now only applies disabled state when not already providing
+- **Pool ghost entries** — Disconnected providers no longer persist forever; unhealthy entries pruned after 30 min of no push
 
 ## [0.2.0] - 2026-03-06
 

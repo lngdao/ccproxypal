@@ -2,9 +2,6 @@
 /// Supported commands:
 ///   /start   - welcome message
 ///   /status  - proxy/tunnel/token/pool status
-///   /start_proxy - start proxy remotely
-///   /stop_proxy  - stop proxy remotely
-///   /tunnel  - start/stop tunnel remotely
 ///   /pool    - show token pool health
 ///   /usage   - today's usage summary
 ///   /help    - list commands
@@ -21,7 +18,8 @@ use serde_json::{json, Value};
 use std::sync::{Arc, Mutex};
 use tauri::Emitter;
 
-use crate::oauth::get_valid_token;
+// COMMENTED OUT: Setup token flow — no more OAuth refresh
+// use crate::oauth::get_valid_token;
 use crate::state::TokenInfo;
 
 const TG_API: &str = "https://api.telegram.org/bot";
@@ -189,31 +187,36 @@ async fn handle_status(ctx: &BotContext, chat_id: i64, client: &reqwest::Client)
 }
 
 async fn handle_token(ctx: &BotContext, chat_id: i64, client: &reqwest::Client) {
+    // Setup token flow: read from cache directly, no refresh
     let cached = { ctx.token_cache.lock().unwrap().clone() };
-    match get_valid_token(cached).await {
-        Ok(token) => {
-            { *ctx.token_cache.lock().unwrap() = Some(token.clone()); }
-
+    // COMMENTED OUT: Old get_valid_token flow
+    // match get_valid_token(cached).await {
+    //     Ok(token) => {
+    //         { *ctx.token_cache.lock().unwrap() = Some(token.clone()); }
+    //         ...
+    //     }
+    //     Err(e) => { ... }
+    // }
+    match cached {
+        Some(token) => {
             let tunnel_url = { ctx.tunnel_url.lock().unwrap().clone() };
             let base_url = tunnel_url.unwrap_or_else(|| format!("http://localhost:{}", ctx.proxy_port));
 
             let text = format!(
-                "🔑 <b>Token refreshed</b>\n\n\
+                "🔑 <b>Token active</b>\n\n\
                 Set these in your <code>~/.zshenv</code>:\n\n\
                 <code>export ANTHROPIC_BASE_URL={}</code>\n\
-                <code>export ANTHROPIC_AUTH_TOKEN=proxy-key</code>\n\n\
-                <i>Token expires in: {}</i>",
+                <code>export ANTHROPIC_AUTH_TOKEN=proxy-key</code>",
                 base_url,
-                format_expiry(token.expires_at)
             );
             let _ = send_message(client, &ctx.bot_token, chat_id, &text).await;
         }
-        Err(e) => {
+        None => {
             let _ = send_message(
                 client,
                 &ctx.bot_token,
                 chat_id,
-                &format!("❌ Failed to get token: {}", e),
+                "❌ No setup token configured. Paste one in the UI first.",
             )
             .await;
         }
@@ -235,34 +238,6 @@ async fn handle_url(ctx: &BotContext, chat_id: i64, client: &reqwest::Client) {
     let _ = send_message(client, &ctx.bot_token, chat_id, &text).await;
 }
 
-async fn handle_refresh(ctx: &BotContext, chat_id: i64, client: &reqwest::Client) {
-    let _ = send_message(client, &ctx.bot_token, chat_id, "🔄 Refreshing token...").await;
-    let stale = {
-        ctx.token_cache.lock().unwrap().clone().map(|mut t| { t.expires_at = 0; t })
-    };
-    match get_valid_token(stale).await {
-        Ok(token) => {
-            let expiry = format_expiry(token.expires_at);
-            { *ctx.token_cache.lock().unwrap() = Some(token); }
-            let _ = send_message(
-                client,
-                &ctx.bot_token,
-                chat_id,
-                &format!("✅ Token refreshed successfully!\nExpires in: {}", expiry),
-            )
-            .await;
-        }
-        Err(e) => {
-            let _ = send_message(
-                client,
-                &ctx.bot_token,
-                chat_id,
-                &format!("❌ Refresh failed: {}", e),
-            )
-            .await;
-        }
-    }
-}
 
 async fn handle_pool(ctx: &BotContext, chat_id: i64, client: &reqwest::Client) {
     if let Some(ref app) = ctx.app_handle {
@@ -334,175 +309,14 @@ async fn handle_usage(ctx: &BotContext, chat_id: i64, client: &reqwest::Client) 
     }
 }
 
-async fn handle_start_proxy(ctx: &BotContext, chat_id: i64, client: &reqwest::Client) {
-    let is_running = *ctx.proxy_running.lock().unwrap();
-    if is_running {
-        let _ = send_message(client, &ctx.bot_token, chat_id, "⚠️ Proxy is already running").await;
-        return;
-    }
-    if let Some(ref app) = ctx.app_handle {
-        // Load token first if needed
-        let token_valid = {
-            let lock = ctx.token_cache.lock().unwrap();
-            lock.as_ref().map(|t| !t.is_expired()).unwrap_or(false)
-        };
-        if !token_valid {
-            let cached = ctx.token_cache.lock().unwrap().clone();
-            match get_valid_token(cached).await {
-                Ok(token) => {
-                    *ctx.token_cache.lock().unwrap() = Some(token);
-                }
-                Err(e) => {
-                    let _ = send_message(client, &ctx.bot_token, chat_id, &format!("❌ Cannot load token: {}", e)).await;
-                    return;
-                }
-            }
-        }
-
-        use tauri::Manager;
-        let state = app.state::<crate::state::AppState>();
-
-        // Gather all needed data from locks, then drop them
-        let (config, db_path, token_cache, token_pool) = {
-            let config = state.config.lock().unwrap().clone();
-            let db_path = state.db.lock().unwrap()
-                .path().map(|p| p.to_string())
-                .unwrap_or_else(|| "ccproxypal.db".to_string());
-            (config, db_path, state.token_cache.clone(), state.token_pool.clone())
-        };
-
-        let port = config.port;
-        let server_state = crate::proxy::server::ServerState {
-            config: Arc::new(config),
-            token_cache,
-            token_pool,
-            db_path,
-            app: app.clone(),
-        };
-
-        let router = crate::proxy::server::build_router(server_state);
-        let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
-        let app_clone = app.clone();
-
-        let join = tokio::spawn(async move {
-            let listener = match tokio::net::TcpListener::bind(format!("0.0.0.0:{}", port)).await {
-                Ok(l) => l,
-                Err(e) => {
-                    crate::commands::emit_log(&app_clone, "error", "proxy", &format!("Bind failed: {}", e));
-                    return;
-                }
-            };
-            crate::commands::emit_log(&app_clone, "info", "proxy", &format!("Listening on 0.0.0.0:{}", port));
-            axum::serve(listener, router)
-                .with_graceful_shutdown(async { let _ = shutdown_rx.await; })
-                .await
-                .ok();
-        });
-
-        {
-            let mut handle_lock = state.proxy_handle.lock().unwrap();
-            *handle_lock = Some(crate::state::ProxyServerHandle { shutdown_tx, _join: join });
-            *ctx.proxy_running.lock().unwrap() = true;
-        }
-
-        let _ = send_message(client, &ctx.bot_token, chat_id, &format!("✅ Proxy started on port {}", port)).await;
-    } else {
-        let _ = send_message(client, &ctx.bot_token, chat_id, "❌ Cannot start proxy remotely").await;
-    }
-}
-
-async fn handle_stop_proxy(ctx: &BotContext, chat_id: i64, client: &reqwest::Client) {
-    let is_running = *ctx.proxy_running.lock().unwrap();
-    if !is_running {
-        let _ = send_message(client, &ctx.bot_token, chat_id, "⚠️ Proxy is not running").await;
-        return;
-    }
-    if let Some(ref app) = ctx.app_handle {
-        use tauri::Manager;
-        let state = app.state::<crate::state::AppState>();
-        let stopped = {
-            let mut handle_lock = state.proxy_handle.lock().unwrap();
-            if let Some(handle) = handle_lock.take() {
-                let _ = handle.shutdown_tx.send(());
-                *ctx.proxy_running.lock().unwrap() = false;
-                true
-            } else {
-                false
-            }
-        };
-        if stopped {
-            crate::commands::emit_log(app, "info", "proxy", "Proxy stopped via Telegram");
-            let _ = send_message(client, &ctx.bot_token, chat_id, "✅ Proxy stopped").await;
-        }
-    }
-}
-
-async fn handle_tunnel(ctx: &BotContext, chat_id: i64, client: &reqwest::Client) {
-    let tunnel_running = ctx.tunnel_url.lock().unwrap().is_some();
-    if tunnel_running {
-        // Stop tunnel
-        if let Some(ref app) = ctx.app_handle {
-            use tauri::Manager;
-            let state = app.state::<crate::state::AppState>();
-            let stopped = {
-                let mut proc_lock = state.tunnel_process.lock().unwrap();
-                if let Some(mut child) = proc_lock.take() {
-                    let _ = crate::tunnel::stop_tunnel(&mut child);
-                    *state.tunnel_url.lock().unwrap() = None;
-                    *ctx.tunnel_url.lock().unwrap() = None;
-                    true
-                } else {
-                    false
-                }
-            };
-            if stopped {
-                let _ = send_message(client, &ctx.bot_token, chat_id, "✅ Tunnel stopped").await;
-                return;
-            }
-        }
-        let _ = send_message(client, &ctx.bot_token, chat_id, "⚠️ Could not stop tunnel").await;
-    } else {
-        // Start tunnel
-        if let Some(ref app) = ctx.app_handle {
-            use tauri::Manager;
-            let state = app.state::<crate::state::AppState>();
-            let port = state.config.lock().unwrap().port;
-            let app_clone = app.clone();
-            let tunnel_url_ref = ctx.tunnel_url.clone();
-
-            let result = crate::tunnel::start_tunnel(port, move |url| {
-                let s = app_clone.state::<crate::state::AppState>();
-                *s.tunnel_url.lock().unwrap() = Some(url.clone());
-                *tunnel_url_ref.lock().unwrap() = Some(url.clone());
-                let _ = app_clone.emit("tunnel-url", url);
-            });
-
-            match result {
-                Ok(child) => {
-                    *state.tunnel_process.lock().unwrap() = Some(child);
-                    let _ = send_message(client, &ctx.bot_token, chat_id, "✅ Tunnel starting...").await;
-                }
-                Err(e) => {
-                    let _ = send_message(client, &ctx.bot_token, chat_id, &format!("❌ Tunnel failed: {}", e)).await;
-                }
-            }
-        } else {
-            let _ = send_message(client, &ctx.bot_token, chat_id, "❌ Cannot manage tunnel remotely").await;
-        }
-    }
-}
 
 const HELP_TEXT: &str = "🤖 <b>ccproxypal Bot</b>\n\n\
 Available commands:\n\
 /status  — proxy, token, tunnel status\n\
-/start_proxy — start proxy remotely\n\
-/stop_proxy  — stop proxy remotely\n\
-/tunnel  — toggle tunnel on/off\n\
 /pool    — show token pool health\n\
 /usage   — today's usage summary\n\
-/token   — get connection info + fresh token\n\
+/token   — get connection info\n\
 /url     — get the proxy URL\n\
-/refresh — force refresh OAuth token\n\
 /help    — show this message";
 
 // ─── Command registration ─────────────────────────────────────────────────
@@ -510,14 +324,10 @@ Available commands:\n\
 async fn register_commands(client: &reqwest::Client, bot_token: &str) {
     let commands = json!([
         { "command": "status",      "description": "Proxy / token / tunnel status" },
-        { "command": "start_proxy", "description": "Start the proxy server" },
-        { "command": "stop_proxy",  "description": "Stop the proxy server" },
-        { "command": "tunnel",      "description": "Toggle Cloudflare tunnel" },
         { "command": "pool",        "description": "Show token pool health" },
         { "command": "usage",       "description": "Today's usage summary" },
-        { "command": "token",       "description": "Get connection info + refresh token" },
+        { "command": "token",       "description": "Get connection info" },
         { "command": "url",         "description": "Get current proxy / tunnel URL" },
-        { "command": "refresh",     "description": "Force refresh OAuth token" },
         { "command": "help",        "description": "List all commands" },
     ]);
 
@@ -611,12 +421,8 @@ pub async fn run_bot(ctx: BotContext) {
                         "/status" => handle_status(&ctx, chat_id, &client).await,
                         "/token" => handle_token(&ctx, chat_id, &client).await,
                         "/url" => handle_url(&ctx, chat_id, &client).await,
-                        "/refresh" => handle_refresh(&ctx, chat_id, &client).await,
                         "/pool" => handle_pool(&ctx, chat_id, &client).await,
                         "/usage" => handle_usage(&ctx, chat_id, &client).await,
-                        "/start_proxy" => handle_start_proxy(&ctx, chat_id, &client).await,
-                        "/stop_proxy" => handle_stop_proxy(&ctx, chat_id, &client).await,
-                        "/tunnel" => handle_tunnel(&ctx, chat_id, &client).await,
                         _ => {
                             if !text.is_empty() {
                                 let _ = send_message(

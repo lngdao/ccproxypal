@@ -3,13 +3,16 @@ import { motion, AnimatePresence } from "framer-motion";
 import { listen } from "@tauri-apps/api/event";
 import { getVersion } from "@tauri-apps/api/app";
 import ProxyPanel from "./components/ProxyPanel";
+import ToolsPanel from "./components/ToolsPanel";
+import PoolPanel from "./components/PoolPanel";
 import SettingsPanel from "./components/SettingsPanel";
 import AnalyticsPanel from "./components/AnalyticsPanel";
 import LogPanel from "./components/LogPanel";
 import ToastContainer from "./components/ui/Toast";
 import { useLogStore, LogLevel, LogSource } from "./lib/logStore";
 
-type Tab = "proxy" | "analytics" | "settings";
+type Tab = "proxy" | "tools" | "pool" | "analytics" | "settings";
+type Mode = "solo" | "hub-host" | "hub-consumer";
 
 const TABS: { id: Tab; label: string; icon: React.ReactNode }[] = [
   {
@@ -24,6 +27,39 @@ const TABS: { id: Tab; label: string; icon: React.ReactNode }[] = [
           strokeLinejoin="round"
         />
         <path d="M3 7l7 4m0 0l7-4m-7 4v7" stroke="currentColor" strokeWidth="1.5" />
+      </svg>
+    ),
+  },
+  {
+    id: "pool",
+    label: "Pool",
+    icon: (
+      <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
+        <circle cx="10" cy="6" r="3" stroke="currentColor" strokeWidth="1.5" />
+        <circle cx="5" cy="14" r="2.5" stroke="currentColor" strokeWidth="1.5" />
+        <circle cx="15" cy="14" r="2.5" stroke="currentColor" strokeWidth="1.5" />
+        <path d="M10 9v2.5M7.5 12l-1 0M12.5 12l1 0" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+      </svg>
+    ),
+  },
+  {
+    id: "tools",
+    label: "Tools",
+    icon: (
+      <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
+        <path
+          d="M12.5 3.5a3.5 3.5 0 0 1 4 4l-1.5 1.5-4-4L12.5 3.5z"
+          stroke="currentColor"
+          strokeWidth="1.5"
+          strokeLinejoin="round"
+        />
+        <path
+          d="M11 5L3.5 12.5a1.5 1.5 0 0 0 0 2.12l1.88 1.88a1.5 1.5 0 0 0 2.12 0L15 9"
+          stroke="currentColor"
+          strokeWidth="1.5"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        />
       </svg>
     ),
   },
@@ -63,6 +99,9 @@ export default function App() {
   const [logOpen, setLogOpen] = useState(false);
   const [logHeight, setLogHeight] = useState(240);
   const [appVersion, setAppVersion] = useState("");
+  const [mode, setMode] = useState<Mode>("solo");
+  const [hubUrl, setHubUrl] = useState("");
+  const [hubSecret, setHubSecret] = useState("");
   const logCount = useLogStore((s) => s.logs.length);
   const addLog = useLogStore((s) => s.addLog);
   const resizing = useRef(false);
@@ -177,7 +216,20 @@ export default function App() {
               transition={{ duration: 0.15 }}
               className="h-full"
             >
-              {activeTab === "proxy" && <ProxyPanel />}
+              {activeTab === "proxy" && (
+                <ProxyPanel
+                  mode={mode}
+                  onModeChange={setMode}
+                  hubUrl={hubUrl}
+                  onHubUrlChange={setHubUrl}
+                  hubSecret={hubSecret}
+                  onHubSecretChange={setHubSecret}
+                />
+              )}
+              {activeTab === "tools" && (
+                <ToolsPanel mode={mode} hubUrl={hubUrl} />
+              )}
+              {activeTab === "pool" && <PoolPanel />}
               {activeTab === "analytics" && <AnalyticsPanel />}
               {activeTab === "settings" && <SettingsPanel />}
             </motion.div>

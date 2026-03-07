@@ -341,7 +341,7 @@ export default function SettingsPanel() {
               Commands
             </span>
             <div className="flex flex-wrap gap-1.5">
-              {["/status", "/start", "/stop", "/tunnel", "/pool", "/usage", "/help"].map(
+              {["/status", "/pool", "/usage", "/token", "/url", "/help"].map(
                 (cmd) => (
                   <code
                     key={cmd}

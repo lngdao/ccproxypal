@@ -25,6 +25,8 @@ pub struct ServerState {
     pub token_pool: Arc<Mutex<TokenPool>>,
     pub db_path: String,
     pub app: tauri::AppHandle,
+    /// Shared HTTP client — reuses connections and TLS sessions across requests.
+    pub http_client: reqwest::Client,
 }
 
 pub fn proxy_log(app: &tauri::AppHandle, level: &str, source: &str, message: &str) {
@@ -102,11 +104,13 @@ async fn health_handler(State(state): State<ServerState>) -> impl IntoResponse {
 }
 
 async fn models_handler(State(state): State<ServerState>) -> impl IntoResponse {
-    let cached = { state.token_cache.lock().unwrap().clone() };
-    if let Ok(token) = crate::oauth::get_valid_token(cached).await {
-        *state.token_cache.lock().unwrap() = Some(token.clone());
-        let client = reqwest::Client::new();
-        if let Ok(resp) = client
+    // COMMENTED OUT: Setup token flow — read token from cache directly, no refresh
+    // let cached = { state.token_cache.lock().unwrap().clone() };
+    // if let Ok(token) = crate::oauth::get_valid_token(cached).await {
+    //     *state.token_cache.lock().unwrap() = Some(token.clone());
+    let token = { state.token_cache.lock().unwrap().clone() };
+    if let Some(token) = token {
+        if let Ok(resp) = state.http_client
             .get("https://api.anthropic.com/v1/models")
             .header("Authorization", format!("Bearer {}", token.access_token))
             .header("anthropic-version", "2023-06-01")
@@ -163,10 +167,15 @@ async fn messages_handler(
     };
 
     let model = body_value["model"].as_str().unwrap_or("unknown").to_string();
-    let is_stream = body_value["stream"].as_bool().unwrap_or(false);
+    let client_wants_stream = body_value["stream"].as_bool().unwrap_or(false);
+    // Note: prepare_claude_code_body forces stream:true to Anthropic, but if the
+    // request goes via API key fallback (make_direct_api_request), stream is NOT forced.
+    // So the response might be SSE (Claude Code path) or JSON (API key path).
+    // We use source + client_wants_stream to decide how to handle the response.
     let start = std::time::Instant::now();
 
     match proxy_request(
+        &state.http_client,
         "/v1/messages",
         body_value,
         state.config.clone(),
@@ -185,10 +194,15 @@ async fn messages_handler(
             };
 
             proxy_log(&state.app, "info", "be", &format!(
-                "{} {} → {} ({})", if is_stream { "stream" } else { "request" }, model, status.as_u16(), source_str
+                "{} {} → {} ({})", if client_wants_stream { "stream" } else { "request" }, model, status.as_u16(), source_str
             ));
 
-            if is_stream {
+            // Claude Code path always gets SSE (forced stream:true).
+            // API key path respects client's original stream setting.
+            let response_is_sse = matches!(source, ProxySource::ClaudeCode);
+
+            if client_wants_stream {
+                // Client wants streaming — pass SSE through directly
                 let resp_headers = resp.headers().clone();
                 let status_code = StatusCode::from_u16(status.as_u16()).unwrap_or(StatusCode::OK);
                 let body_stream = resp.bytes_stream();
@@ -207,6 +221,24 @@ async fn messages_handler(
                     response.headers_mut().insert(name, value.clone());
                 }
                 response
+            } else if response_is_sse {
+                // Client wants JSON but Anthropic returned SSE (forced stream).
+                // Buffer the SSE stream and reconstruct a single JSON message response.
+                let status_code = StatusCode::from_u16(status.as_u16()).unwrap_or(StatusCode::OK);
+                match collect_sse_to_message(resp).await {
+                    Ok(assembled) => {
+                        let input = assembled["usage"]["input_tokens"].as_i64().unwrap_or(0);
+                        let output = assembled["usage"]["output_tokens"].as_i64().unwrap_or(0);
+                        let cost = estimate_cost(&model, input, output);
+                        record_to_db(&state.db_path, &model, source_str, input, output, false, start.elapsed().as_millis() as i64, cost, None);
+                        Response::builder()
+                            .status(status_code)
+                            .header("Content-Type", "application/json")
+                            .body(Body::from(serde_json::to_vec(&assembled).unwrap_or_default()))
+                            .unwrap()
+                    }
+                    Err(e) => error_response(500, &format!("Failed to reassemble stream: {}", e)),
+                }
             } else {
                 let status_code = StatusCode::from_u16(status.as_u16()).unwrap_or(StatusCode::OK);
                 match resp.bytes().await {
@@ -231,7 +263,7 @@ async fn messages_handler(
         Err(e) => {
             let msg = e.to_string();
             proxy_log(&state.app, "error", "be", &format!("Request error (messages): {}", msg));
-            record_to_db(&state.db_path, &model, "error", 0, 0, is_stream, start.elapsed().as_millis() as i64, 0.0, Some(&msg));
+            record_to_db(&state.db_path, &model, "error", 0, 0, client_wants_stream, start.elapsed().as_millis() as i64, 0.0, Some(&msg));
             error_response(500, &msg)
         }
     }
@@ -260,7 +292,7 @@ async fn chat_completions_handler(
     };
 
     let original_model = openai_req.model.clone();
-    let is_stream = openai_req.stream.unwrap_or(false);
+    let client_wants_stream = openai_req.stream.unwrap_or(false);
     let anthropic_req = openai_to_anthropic(openai_req);
     let model = anthropic_req.model.clone();
     let start = std::time::Instant::now();
@@ -271,6 +303,7 @@ async fn chat_completions_handler(
     };
 
     match proxy_request(
+        &state.http_client,
         "/v1/messages",
         body_value,
         state.config.clone(),
@@ -289,10 +322,12 @@ async fn chat_completions_handler(
             };
 
             proxy_log(&state.app, "info", "be", &format!(
-                "{} {} → {} ({})", if is_stream { "stream" } else { "request" }, original_model, status.as_u16(), source_str
+                "{} {} → {} ({})", if client_wants_stream { "stream" } else { "request" }, original_model, status.as_u16(), source_str
             ));
 
-            if is_stream {
+            let response_is_sse = matches!(source, ProxySource::ClaudeCode);
+
+            if client_wants_stream {
                 // For streaming, convert Anthropic SSE to OpenAI SSE while tracking usage
                 let body_stream = resp.bytes_stream();
                 let converted = convert_stream_to_openai_with_usage(
@@ -309,6 +344,25 @@ async fn chat_completions_handler(
                     .header("Cache-Control", "no-cache")
                     .body(Body::from_stream(converted))
                     .unwrap()
+            } else if response_is_sse {
+                // Client wants JSON but Anthropic returned SSE (forced stream).
+                // Buffer SSE → reconstruct Anthropic JSON → convert to OpenAI format.
+                match collect_sse_to_message(resp).await {
+                    Ok(anthropic_resp) => {
+                        let input = anthropic_resp["usage"]["input_tokens"].as_i64().unwrap_or(0);
+                        let output = anthropic_resp["usage"]["output_tokens"].as_i64().unwrap_or(0);
+                        let cost = estimate_cost(&model, input, output);
+                        record_to_db(&state.db_path, &model, source_str, input, output, false, start.elapsed().as_millis() as i64, cost, None);
+
+                        let openai_resp = anthropic_to_openai(anthropic_resp, &original_model);
+                        Response::builder()
+                            .status(status)
+                            .header("Content-Type", "application/json")
+                            .body(Body::from(serde_json::to_vec(&openai_resp).unwrap_or_default()))
+                            .unwrap()
+                    }
+                    Err(e) => error_response(500, &format!("Failed to reassemble stream: {}", e)),
+                }
             } else {
                 match resp.bytes().await {
                     Ok(bytes) => {
@@ -339,9 +393,126 @@ async fn chat_completions_handler(
         Err(e) => {
             let msg = e.to_string();
             proxy_log(&state.app, "error", "be", &format!("Request error (chat): {}", msg));
-            record_to_db(&state.db_path, &model, "error", 0, 0, is_stream, start.elapsed().as_millis() as i64, 0.0, Some(&msg));
+            record_to_db(&state.db_path, &model, "error", 0, 0, client_wants_stream, start.elapsed().as_millis() as i64, 0.0, Some(&msg));
             error_response(500, &msg)
         }
+    }
+}
+
+/// Buffer an SSE stream response and reconstruct a single Anthropic Messages API JSON response.
+/// Used when we force `stream: true` to Anthropic but the client requested non-streaming.
+///
+/// Processes these SSE event types:
+/// - `message_start` → base message object (id, type, model, role, usage)
+/// - `content_block_start` → new content block
+/// - `content_block_delta` → append text/tool delta to current block
+/// - `content_block_stop` → finalize block
+/// - `message_delta` → stop_reason, final usage.output_tokens
+/// - `message_stop` → end of message
+async fn collect_sse_to_message(resp: reqwest::Response) -> Result<Value, String> {
+    use futures_util::StreamExt;
+
+    let mut stream = resp.bytes_stream();
+    let mut buffer = String::new();
+    let mut message: Option<Value> = None;
+    let mut content_blocks: Vec<Value> = Vec::new();
+    let mut current_block: Option<Value> = None;
+
+    while let Some(chunk) = stream.next().await {
+        let bytes = chunk.map_err(|e| e.to_string())?;
+        buffer.push_str(&String::from_utf8_lossy(&bytes));
+
+        while let Some(pos) = buffer.find("\n\n") {
+            let event = buffer[..pos].to_string();
+            buffer = buffer[pos + 2..].to_string();
+
+            for line in event.lines() {
+                if let Some(data) = line.strip_prefix("data: ") {
+                    if data == "[DONE]" {
+                        continue;
+                    }
+                    if let Ok(ev) = serde_json::from_str::<Value>(data) {
+                        match ev["type"].as_str() {
+                            Some("message_start") => {
+                                if let Some(msg) = ev.get("message") {
+                                    message = Some(msg.clone());
+                                }
+                            }
+                            Some("content_block_start") => {
+                                if let Some(block) = ev.get("content_block") {
+                                    current_block = Some(block.clone());
+                                }
+                            }
+                            Some("content_block_delta") => {
+                                if let Some(delta) = ev.get("delta") {
+                                    if let Some(ref mut block) = current_block {
+                                        // Text delta
+                                        if let Some(text) = delta.get("text").and_then(|t| t.as_str()) {
+                                            let existing = block.get("text").and_then(|t| t.as_str()).unwrap_or("");
+                                            block["text"] = json!(format!("{}{}", existing, text));
+                                        }
+                                        // Thinking delta
+                                        if let Some(text) = delta.get("thinking").and_then(|t| t.as_str()) {
+                                            let existing = block.get("thinking").and_then(|t| t.as_str()).unwrap_or("");
+                                            block["thinking"] = json!(format!("{}{}", existing, text));
+                                        }
+                                        // Tool use input delta (JSON string accumulation)
+                                        if let Some(partial) = delta.get("partial_json").and_then(|t| t.as_str()) {
+                                            let existing = block.get("_partial_json").and_then(|t| t.as_str()).unwrap_or("");
+                                            block["_partial_json"] = json!(format!("{}{}", existing, partial));
+                                        }
+                                    }
+                                }
+                            }
+                            Some("content_block_stop") => {
+                                if let Some(mut block) = current_block.take() {
+                                    // Finalize tool_use input from accumulated JSON string
+                                    if block.get("type").and_then(|t| t.as_str()) == Some("tool_use") {
+                                        if let Some(partial) = block.get("_partial_json").and_then(|t| t.as_str()) {
+                                            if let Ok(parsed) = serde_json::from_str::<Value>(partial) {
+                                                block["input"] = parsed;
+                                            }
+                                        }
+                                        if let Some(obj) = block.as_object_mut() {
+                                            obj.remove("_partial_json");
+                                        }
+                                    }
+                                    content_blocks.push(block);
+                                }
+                            }
+                            Some("message_delta") => {
+                                if let Some(ref mut msg) = message {
+                                    if let Some(delta) = ev.get("delta") {
+                                        if let Some(reason) = delta.get("stop_reason") {
+                                            msg["stop_reason"] = reason.clone();
+                                        }
+                                        if let Some(seq) = delta.get("stop_sequence") {
+                                            msg["stop_sequence"] = seq.clone();
+                                        }
+                                    }
+                                    // Merge final usage
+                                    if let Some(usage) = ev.get("usage") {
+                                        if let Some(output) = usage.get("output_tokens") {
+                                            msg["usage"]["output_tokens"] = output.clone();
+                                        }
+                                    }
+                                }
+                            }
+                            Some("message_stop") => { /* done */ }
+                            _ => {}
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    match message {
+        Some(mut msg) => {
+            msg["content"] = json!(content_blocks);
+            Ok(msg)
+        }
+        None => Err("No message_start event received in SSE stream".to_string()),
     }
 }
 
@@ -561,8 +732,11 @@ async fn hub_provide_handler(
         expires_at: body.expires_at,
     };
     let provider_id = body.provider_id.clone();
-    state.token_pool.lock().unwrap().upsert(&provider_id, token);
-    let count = state.token_pool.lock().unwrap().healthy_count();
+    let mut pool = state.token_pool.lock().unwrap();
+    pool.prune_stale(); // Auto-remove entries that haven't pushed in 30 min
+    pool.upsert(&provider_id, token);
+    let count = pool.healthy_count();
+    drop(pool);
     proxy_log(&state.app, "info", "hub", &format!("Provider '{}' pushed token (pool: {} healthy)", provider_id, count));
     Json(json!({"ok": true, "pool_size": count})).into_response()
 }
@@ -574,20 +748,28 @@ async fn hub_status_handler(
     if !check_hub_secret(&headers, &state.config) {
         return (StatusCode::UNAUTHORIZED, Json(json!({"error": "Invalid hub secret"}))).into_response();
     }
-    let pool = state.token_pool.lock().unwrap();
+    let mut pool = state.token_pool.lock().unwrap();
+    pool.prune_stale();
+    let now = chrono::Utc::now().timestamp_millis();
+    let stale_ttl = 10 * 60 * 1000_i64;
     let providers: Vec<Value> = pool.entries.iter().map(|e| {
+        let stale = !e.healthy && now - e.provided_at > stale_ttl;
         json!({
             "provider_id": e.provider_id,
-            "healthy": e.healthy,
+            "healthy": e.healthy && !stale,
+            "stale": stale,
             "expired": e.token.is_expired(),
             "provided_at": e.provided_at,
             "last_used": e.last_used,
             "expires_at": e.token.expires_at,
         })
     }).collect();
+    let healthy = pool.healthy_count();
+    let total = pool.entries.len();
+    drop(pool);
     Json(json!({
-        "total": pool.entries.len(),
-        "healthy": pool.healthy_count(),
+        "total": total,
+        "healthy": healthy,
         "providers": providers,
     })).into_response()
 }

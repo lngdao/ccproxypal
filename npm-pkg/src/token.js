@@ -1,101 +1,51 @@
-import { execFileSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { join, dirname } from 'node:path';
 
-const CLAUDE_CLIENT_ID = '9d1c250a-e61b-44d9-88ed-5944d1962f5e';
-const TOKEN_URL = 'https://api.anthropic.com/v1/oauth/token';
-const EXPIRY_BUFFER_MS = 5 * 60 * 1000;
+const TOKEN_PATH = join(homedir(), '.config', 'ccproxypal', 'token');
 
 let _cache = null;
 
-/** Inject tokens manually (client mode — no local credentials needed) */
-export function setManualToken(accessToken, refreshToken) {
-  // 55 min — lets the 5-min buffer trigger a refresh before actual expiry
-  _cache = { accessToken, refreshToken, expiresAt: Date.now() + 55 * 60 * 1000 };
+/** Inject token into memory cache */
+export function setManualToken(accessToken) {
+  _cache = { accessToken, refreshToken: '', expiresAt: Date.now() + 365 * 24 * 60 * 60 * 1000 };
 }
 
-function loadFromKeychain() {
+/** Save token to disk (~/.config/ccproxypal/token) */
+export function saveTokenToDisk(accessToken) {
+  const dir = dirname(TOKEN_PATH);
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(TOKEN_PATH, accessToken.trim(), { mode: 0o600 });
+}
+
+/** Load token from disk */
+function loadFromConfigFile() {
   try {
-    const raw = execFileSync(
-      'security',
-      ['find-generic-password', '-a', process.env.USER ?? '', '-s', 'Claude Code-credentials', '-w'],
-      { encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] }
-    ).trim();
-    return raw ? JSON.parse(raw) : null;
+    const token = readFileSync(TOKEN_PATH, 'utf8').trim();
+    if (!token) return null;
+    return { accessToken: token, refreshToken: '', expiresAt: Date.now() + 365 * 24 * 60 * 60 * 1000 };
   } catch {
     return null;
   }
 }
 
-function loadFromFile() {
-  try {
-    return JSON.parse(readFileSync(join(homedir(), '.claude', '.credentials.json'), 'utf8'));
-  } catch {
-    return null;
-  }
-}
-
-function loadCredentials() {
-  const creds = loadFromKeychain() ?? loadFromFile();
-  if (!creds?.claudeAiOauth) {
-    throw new Error('No Claude credentials found. Run `claude auth login` first.');
-  }
-  const { accessToken, refreshToken, expiresAt } = creds.claudeAiOauth;
-  return { accessToken, refreshToken, expiresAt };
-}
-
-function isExpired(expiresAt) {
-  return Date.now() >= expiresAt - EXPIRY_BUFFER_MS;
-}
-
-async function doRefresh(refreshToken) {
-  const res = await fetch(TOKEN_URL, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Accept': 'application/json',
-    },
-    body: JSON.stringify({
-      grant_type: 'refresh_token',
-      refresh_token: refreshToken,
-      client_id: CLAUDE_CLIENT_ID,
-    }),
-  });
-  if (!res.ok) {
-    const text = await res.text().catch(() => '');
-    const preview = text.length > 200 ? text.slice(0, 200) : text;
-    throw new Error(`Token refresh failed (${res.status}): ${preview}`);
-  }
-  const data = await res.json();
-  return {
-    accessToken: data.access_token,
-    refreshToken: data.refresh_token,
-    expiresAt: Date.now() + data.expires_in * 1000,
-  };
-}
-
+/** Get token from cache → env → disk. Throws if none found. */
 export async function getToken() {
-  if (_cache && !isExpired(_cache.expiresAt)) return _cache;
+  if (_cache) return _cache;
 
-  // Try refresh cached token first
-  if (_cache && isExpired(_cache.expiresAt)) {
-    try {
-      const refreshed = await doRefresh(_cache.refreshToken);
-      _cache = refreshed;
-      return refreshed;
-    } catch {
-      // Refresh failed — fall through to reload from disk
-    }
+  const envToken = process.env.CCPROXYPAL_TOKEN;
+  if (envToken) {
+    _cache = { accessToken: envToken, refreshToken: '', expiresAt: Date.now() + 365 * 24 * 60 * 60 * 1000 };
+    return _cache;
   }
 
-  // Reload from disk (Claude Code CLI may have updated credentials)
-  let creds = loadCredentials();
-  if (isExpired(creds.expiresAt)) {
-    creds = await doRefresh(creds.refreshToken);
+  const fileCreds = loadFromConfigFile();
+  if (fileCreds) {
+    _cache = fileCreds;
+    return _cache;
   }
-  _cache = creds;
-  return creds;
+
+  throw new Error('No setup token found. Run: ccproxypal save-token <token>');
 }
 
 export function clearTokenCache() {

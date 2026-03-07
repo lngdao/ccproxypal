@@ -23,7 +23,11 @@ pub fn init_db(conn: &Connection) -> Result<()> {
             budget_weekly REAL,
             budget_monthly REAL
         );
-        INSERT OR IGNORE INTO budget_settings (id) VALUES (1);",
+        INSERT OR IGNORE INTO budget_settings (id) VALUES (1);
+        CREATE TABLE IF NOT EXISTS app_settings (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL
+        );",
     )?;
     Ok(())
 }
@@ -238,3 +242,29 @@ pub fn check_budget(conn: &Connection) -> Result<Option<String>> {
 
     Ok(None)
 }
+
+// ─── App Settings persistence (key-value JSON) ──────────────────────────────
+
+pub fn save_setting(conn: &Connection, key: &str, value: &impl Serialize) -> Result<()> {
+    let json = serde_json::to_string(value)?;
+    conn.execute(
+        "INSERT OR REPLACE INTO app_settings (key, value) VALUES (?1, ?2)",
+        params![key, json],
+    )?;
+    Ok(())
+}
+
+pub fn load_setting<T: serde::de::DeserializeOwned>(conn: &Connection, key: &str) -> Result<Option<T>> {
+    let result = conn.query_row(
+        "SELECT value FROM app_settings WHERE key = ?1",
+        params![key],
+        |row| row.get::<_, String>(0),
+    );
+    match result {
+        Ok(json) => Ok(Some(serde_json::from_str(&json)?)),
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+        Err(e) => Err(e.into()),
+    }
+}
+
+

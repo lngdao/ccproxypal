@@ -4,14 +4,17 @@ use serde_json::{json, Value};
 
 /// Normalize Cursor-style model names to Anthropic API model names.
 /// e.g. "claude-4.5-opus-high" → "claude-opus-4-5"
+/// e.g. "claude-4.6-opus-high" → "claude-opus-4-6"
 pub fn normalize_model_name(model: &str) -> (String, Option<String>) {
-    // Cursor patterns: claude-4.5-{opus|sonnet|haiku}-{high|medium|low} etc.
-    let re = Regex::new(r"^claude-4\.5-(opus|sonnet|haiku)(?:-(high|medium|low))?(?:-thinking)?$")
+    // Cursor patterns: claude-{version}-{variant}-{effort} etc.
+    let re = Regex::new(r"^claude-(\d+)\.(\d+)-(opus|sonnet|haiku)(?:-(high|medium|low|max))?(?:-thinking)?$")
         .unwrap();
     if let Some(caps) = re.captures(model) {
-        let model_type = &caps[1];
-        let budget = caps.get(2).map(|m| m.as_str().to_string());
-        return (format!("claude-{}-4-5", model_type), budget);
+        let major = &caps[1];
+        let minor = &caps[2];
+        let model_type = &caps[3];
+        let budget = caps.get(4).map(|m| m.as_str().to_string());
+        return (format!("claude-{}-{}-{}", model_type, major, minor), budget);
     }
 
     // claude-3-7-sonnet → claude-3-7-sonnet-20250219 style passthrough
@@ -331,10 +334,13 @@ pub fn get_models_list() -> Value {
     json!({
         "object": "list",
         "data": [
+            {"id": "claude-opus-4-6", "object": "model", "created": 1700000000, "owned_by": "anthropic"},
+            {"id": "claude-sonnet-4-6", "object": "model", "created": 1700000000, "owned_by": "anthropic"},
             {"id": "claude-opus-4-5", "object": "model", "created": 1700000000, "owned_by": "anthropic"},
             {"id": "claude-sonnet-4-5", "object": "model", "created": 1700000000, "owned_by": "anthropic"},
             {"id": "claude-haiku-4-5", "object": "model", "created": 1700000000, "owned_by": "anthropic"},
             {"id": "claude-opus-4-1", "object": "model", "created": 1700000000, "owned_by": "anthropic"},
+            {"id": "claude-opus-4-0", "object": "model", "created": 1700000000, "owned_by": "anthropic"},
             {"id": "claude-sonnet-4-0", "object": "model", "created": 1700000000, "owned_by": "anthropic"},
             {"id": "claude-3-7-sonnet-20250219", "object": "model", "created": 1700000000, "owned_by": "anthropic"},
             {"id": "claude-3-5-haiku-20241022", "object": "model", "created": 1700000000, "owned_by": "anthropic"},
@@ -344,14 +350,18 @@ pub fn get_models_list() -> Value {
 
 /// Estimate cost for a given model and token counts ($/MTok)
 pub fn estimate_cost(model: &str, input_tokens: i64, output_tokens: i64) -> f64 {
-    let (input_price, output_price) = if model.contains("opus") {
+    let (input_price, output_price) = if model.contains("opus-4-6") {
         (15.0_f64, 75.0_f64)
+    } else if model.contains("opus-4-5") || model.contains("opus-4-1") || model.contains("opus-4-0") || model.contains("opus-4-20") {
+        (15.0_f64, 75.0_f64)
+    } else if model.contains("sonnet-4-6") {
+        (3.0_f64, 15.0_f64)
     } else if model.contains("sonnet") {
         (3.0_f64, 15.0_f64)
     } else if model.contains("haiku") {
         (1.0_f64, 5.0_f64)
     } else {
-        (3.0_f64, 15.0_f64)
+        (3.0_f64, 15.0_f64) // default to sonnet pricing
     };
 
     (input_tokens as f64 / 1_000_000.0) * input_price

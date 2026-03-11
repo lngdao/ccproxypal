@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+#### Proxy Compatibility (synced with Claude CLI v2.1.72)
+- **User-Agent rotation** — Bumped from `2.1.66–2.1.70` to `2.1.68–2.1.72` to match current Claude CLI version
+- **Model normalize** — Generalized Cursor-style regex to handle any version (`4.5`, `4.6`, future `5.0+`) instead of hardcoded `4.5`; added `max` effort level (Opus 4.6)
+- **Static model list** — Added `claude-opus-4-6`, `claude-sonnet-4-6`, `claude-opus-4-0` to fallback `/v1/models` response
+- **Cost estimate** — Granular per-model pricing: separate matches for `opus-4-6`, `opus-4-5/4-1/4-0`, `sonnet-4-6` instead of broad `contains("opus")`
+- **Body preparation** — `output_config` and `thinking` fields always passthrough (standard API fields); `context_management` only stripped when `strip_unsupported_fields` is enabled
+
 ## [0.3.0] - 2026-03-07
 
 ### Added

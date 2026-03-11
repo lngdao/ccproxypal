@@ -26,17 +26,17 @@ fn pick_user_agent() -> &'static str {
     std::thread::current().id().hash(&mut hasher);
     let roll = (hasher.finish() % 100) as u8;
 
-    // Weights: 2.1.70=45%, 2.1.69=25%, 2.1.68=15%, 2.1.67=10%, 2.1.66=5%
+    // Weights: 2.1.72=45%, 2.1.71=25%, 2.1.70=15%, 2.1.69=10%, 2.1.68=5%
     if roll < 45 {
-        "claude-cli/2.1.70 (external, cli)"
+        "claude-cli/2.1.72 (external, cli)"
     } else if roll < 70 {
-        "claude-cli/2.1.69 (external, cli)"
+        "claude-cli/2.1.71 (external, cli)"
     } else if roll < 85 {
-        "claude-cli/2.1.68 (external, cli)"
+        "claude-cli/2.1.70 (external, cli)"
     } else if roll < 95 {
-        "claude-cli/2.1.67 (external, cli)"
+        "claude-cli/2.1.69 (external, cli)"
     } else {
-        "claude-cli/2.1.66 (external, cli)"
+        "claude-cli/2.1.68 (external, cli)"
     }
 }
 
@@ -48,13 +48,16 @@ pub enum ProxySource {
 /// Prepare the request body for Claude Code:
 /// - Inject required system prompt prefix
 /// - Remove unsupported fields (reasoning_budget, cache_control.ttl)
+/// - Preserve newer API fields (output_config, thinking, context_management)
 fn prepare_claude_code_body(mut body: Value, strip_unsupported: bool) -> Value {
     if let Some(obj) = body.as_object_mut() {
         obj.remove("reasoning_budget");
         obj.remove("metadata"); // Claude Code CLI doesn't send metadata
         if strip_unsupported {
+            // Only strip context_management if user opted in — newer models support it
             obj.remove("context_management");
         }
+        // output_config and thinking are standard API fields — always passthrough
 
         // Force streaming — Claude Code always streams
         obj.insert("stream".to_string(), Value::Bool(true));

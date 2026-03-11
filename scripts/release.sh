@@ -12,6 +12,16 @@ fi
 TAG="v${VERSION}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT_DIR="$(dirname "$SCRIPT_DIR")"
+TODAY=$(date +%Y-%m-%d)
+
+# Update CHANGELOG.md — replace [Unreleased] with version + date
+CHANGELOG="$ROOT_DIR/CHANGELOG.md"
+if grep -q '## \[Unreleased\]' "$CHANGELOG"; then
+  sed -i '' "s/## \[Unreleased\]/## [${VERSION}] - ${TODAY}/" "$CHANGELOG"
+  echo "Updated CHANGELOG.md: [Unreleased] → [${VERSION}] - ${TODAY}"
+else
+  echo "Warning: No [Unreleased] section found in CHANGELOG.md"
+fi
 
 # Update tauri.conf.json
 sed -i '' "s/\"version\": \".*\"/\"version\": \"${VERSION}\"/" "$ROOT_DIR/src-tauri/tauri.conf.json"
@@ -35,6 +45,7 @@ node -e "
 # Commit version bump
 if ! git diff --quiet; then
   git add \
+    "$ROOT_DIR/CHANGELOG.md" \
     "$ROOT_DIR/src-tauri/tauri.conf.json" \
     "$ROOT_DIR/src-tauri/Cargo.toml" \
     "$ROOT_DIR/src-tauri/Cargo.lock" \

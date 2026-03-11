@@ -1,6 +1,6 @@
 [package]
 name = "ccproxypal"
-version = "0.3.0"
+version = "0.4.0"
 description = "ccproxypal — Claude Code OAuth proxy desktop app"
 authors = ["you"]
 edition = "2021"
